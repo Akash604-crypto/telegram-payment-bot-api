@@ -463,7 +463,7 @@ def build_manual_payment_text(package, method):
 
 # -------------------- Startup: register handlers & run --------------------
 
-application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+application = ApplicationBuilder().token(BOT_TOKEN).build()
 
 application.add_handler(CommandHandler('start', start_handler))
 application.add_handler(CallbackQueryHandler(callback_handler))
