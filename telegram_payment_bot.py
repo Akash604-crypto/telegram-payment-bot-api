@@ -166,9 +166,16 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # After user chooses package, show payment methods
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+
+    # FIX: Ignore "query too old" Telegram error
+    try:
+        await query.answer()
+    except:
+        pass
+
     data = query.data
     user = query.from_user
+
 
     if data == "help":
         await query.message.reply_text("Contact help: @Dark123222_bot")
