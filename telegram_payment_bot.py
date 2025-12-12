@@ -278,6 +278,13 @@ async def admin_review_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 p["status"] = "verified"
                 save_db(DB)
 
+                # Remove inline buttons
+                try:
+                    await query.edit_message_reply_markup(None)
+                    await query.edit_message_text("✅ Payment Approved")
+                except:
+                    pass
+
                 await send_link_to_user(p["user_id"], p["package"])
 
                 return await query.message.reply_text(
@@ -289,6 +296,13 @@ async def admin_review_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 p["status"] = "declined"
                 save_db(DB)
 
+                # Remove inline buttons
+                try:
+                    await query.edit_message_reply_markup(None)
+                    await query.edit_message_text("❌ Payment Declined")
+                except:
+                    pass
+
                 await app_instance.bot.send_message(
                     chat_id=p["user_id"],
                     text="❌ Payment declined.\nInvalid or incomplete proof.\n"
@@ -297,7 +311,10 @@ async def admin_review_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
                 return await query.message.reply_text("❌ Payment declined.")
 
+    # OUTSIDE the loop
     return await query.message.reply_text("Payment not found.")
+
+
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -338,19 +355,37 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ]
                 ])
 
-                await app_instance.bot.send_message(
-                    chat_id=SETTINGS["admin_chat_id"],
-                    text=(
-                        f"📩 *New Payment Proof Received*\n"
-                        f"User: {user_id}\n"
-                        f"Package: {p['package']}\n"
-                        f"Method: {p['method']}"
-                    ),
-                    reply_markup=buttons,
-                    parse_mode="Markdown"
+                # Send screenshot/document to admin WITH approve/decline buttons
+                caption = (
+                    f"📩 *New Payment Proof Received*\n"
+                    f"User: {user_id}\n"
+                    f"Package: {p['package']}\n"
+                    f"Method: {p['method']}"
                 )
 
+                # If the user sent a photo → forward photo
+                if msg.photo:
+                    await app_instance.bot.send_photo(
+                        chat_id=SETTINGS["admin_chat_id"],
+                        photo=open(save_path, "rb"),
+                        caption=caption,
+                        reply_markup=buttons,
+                        parse_mode="Markdown"
+                    )
+
+                # If the user sent a PDF/document → forward document
+                elif msg.document:
+                    await app_instance.bot.send_document(
+                        chat_id=SETTINGS["admin_chat_id"],
+                        document=open(save_path, "rb"),
+                        caption=caption,
+                        reply_markup=buttons,
+                        parse_mode="Markdown"
+                    )
+
                 return await msg.reply_text("📸 Screenshot received. Admin will verify shortly.")
+
+
 
     # ----------------------
     # Fallback: nothing matched
