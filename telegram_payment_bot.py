@@ -49,6 +49,7 @@ Notes:
 """
 
 import os
+import base64
 import json
 import time
 import hmac
@@ -217,24 +218,30 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_db(DB)
 
         # If UPI -> create razorpay payment link and send to user (automatic)
-        if method == "upi":
-            amount = SETTINGS["prices"][package]["upi"] * 100  # in paise
-            # create payment link
-            link = create_razorpay_payment_link(amount, f"{package.upper()} bundle for {user.id}")
-            if link:
-                # store link ref
-                entry["payment_link"] = link["short_url"]
-               entry["razorpay_id"] = link.get("id") or link.get("entity", {}).get("id")
+       if method == "upi":
+    amount = SETTINGS["prices"][package]["upi"] * 100  # INR → paise
+    link = create_razorpay_payment_link(amount, f"{package.upper()} bundle for {user.id}")
 
-                save_db(DB)
-                await query.message.reply_text(
-                    f"UPI payment link created. Pay using this link:\n{link['short_url']}\nAfter payment the bot will auto-deliver the access link.")
-                # notify admin about pending payment
-                await notify_admin_of_pending(entry)
-                return
-            else:
-                await query.message.reply_text("Failed to create payment link. Please try again later or contact admin.")
-                return
+    if not link:
+        return await query.message.reply_text(
+            "Failed to create payment link. Please try again later or contact admin."
+        )
+
+    # ⭐ FIX 1: Store link + razorpay_id correctly
+    entry["payment_link"] = link.get("short_url")
+    entry["razorpay_id"] = link.get("id")  # Razorpay ALWAYS returns this
+
+    # ⭐ FIX 2: Save DB now
+    save_db(DB)
+
+    await query.message.reply_text(
+        f"UPI payment link created.\nPay here:\n{entry['payment_link']}\n\n"
+        "After payment is successful, bot will auto-deliver your access link."
+    )
+
+    await notify_admin_of_pending(entry)
+    return
+
 
         # Crypto and Remitly - manual
         if method in ("crypto", "remitly"):
@@ -453,15 +460,16 @@ def razorpay_webhook():
 
     # Verify signature
     if RAZORPAY_WEBHOOK_SECRET:
-        computed = hmac.new(
-            RAZORPAY_WEBHOOK_SECRET.encode(),
-            payload,
-            hashlib.sha256
-        ).hexdigest()
 
-        if signature and computed not in signature and signature not in computed:
-            print("❌ Invalid Razorpay signature")
-            return jsonify({'status': 'invalid signature'}), 400
+
+computed = base64.b64encode(
+    hmac.new(RAZORPAY_WEBHOOK_SECRET.encode(), payload, hashlib.sha256).digest()
+).decode()
+
+if computed != signature:
+    print("❌ Invalid Razorpay signature")
+    return jsonify({"status": "invalid signature"}), 400
+
 
     event = request.json or {}
     event_type = event.get("event")
