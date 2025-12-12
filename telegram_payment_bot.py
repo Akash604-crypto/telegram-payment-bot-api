@@ -614,44 +614,72 @@ def razorpay_webhook():
             print("❌ Invalid Razorpay signature")
             return jsonify({"status": "invalid signature"}), 400
 
-
-
     event = request.json or {}
     event_type = event.get("event")
 
-    # Accept BOTH events
-    if event_type in ["payment_link.paid", "payment_link.updated"]:
-        entity = event.get("payload", {}).get("payment_link", {}).get("entity", {})
-        pid = entity.get("id")
+    if event_type in [
+        "payment_link.paid",
+        "payment_link.updated",
+        "payment.authorized",
+        "payment.captured",
+        "order.paid"
+    ]:
+
+        payload = event.get("payload", {})
+        pid = None
+        entity = None
+
+        # 1️⃣ payment_link events
+        if "payment_link" in payload:
+            entity = payload["payment_link"]["entity"]
+            pid = entity.get("id")
+
+        # 2️⃣ payment events
+        elif "payment" in payload:
+            entity = payload["payment"]["entity"]
+            pid = entity.get("payment_link_id")
+
+        # 3️⃣ order.paid events
+        elif "order" in payload:
+            entity = payload["order"]["entity"]
+            notes = entity.get("notes", {})
+            pid = notes.get("payment_link_id")
+
+        print("Extracted payment_link_id:", pid)
+
+        if not pid:
+            print("❌ Could not extract payment_link_id")
+            return jsonify({"status": "missing payment_link_id"}), 400
 
         print("🔔 RAZORPAY WEBHOOK RECEIVED FOR:", pid)
 
-        # Match payment in DB
+        # Match with DB
         for p in DB["payments"]:
             if p.get("razorpay_id") == pid:
+
                 p["status"] = "verified"
                 p["razorpay_payload"] = entity
                 save_db(DB)
 
-                print("✅ Payment matched in DB, sending access link...")
+                print("✅ Payment matched! Sending access link...")
 
-                # Safe async call
                 try:
                     import asyncio
                     loop = app_instance._application_loop
-
                     asyncio.run_coroutine_threadsafe(
                         send_link_to_user(p["user_id"], p["package"]),
                         loop
                     )
                 except Exception as e:
-                    print("Webhook async error:", e)
+                    print("⚠️ Error sending Telegram message:", e)
 
                 break
+
         else:
-            print("❌ No matching razorpay_id found in DB")
+            print("❌ Payment not found in DB")
 
     return jsonify({"status": "ok"})
+
 
 
 
