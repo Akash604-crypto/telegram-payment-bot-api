@@ -454,7 +454,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # -------------------- Flask webhook for Razorpay --------------------
 @app.route("/")
 def home():
-    return "Bot running", 200
+    return "OK", 200
+
 
 @app.route('/razorpay_webhook', methods=['POST'])
 def razorpay_webhook():
@@ -523,7 +524,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=port)
 
 if __name__ == '__main__':
-    print("🚀 Starting Flask thread...")
+    print("🚀 Starting Flask webhook server thread...")
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
