@@ -440,6 +440,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Total payments: {total}\nVerified: {verified}")
 
 # -------------------- Flask webhook for Razorpay --------------------
+# -------------------- Flask webhook for Razorpay --------------------
 @app.route("/")
 def home():
     return "OK", 200
@@ -449,33 +450,50 @@ def home():
 def razorpay_webhook():
     payload = request.get_data()
     signature = request.headers.get('X-Razorpay-Signature', '')
+
+    # verify signature
     if RAZORPAY_WEBHOOK_SECRET:
         computed = hmac.new(
-            RAZORPAY_WEBHOOK_SECRET.encode(), payload, hashlib.sha256
+            RAZORPAY_WEBHOOK_SECRET.encode(),
+            payload,
+            hashlib.sha256
         ).hexdigest()
-        # Razorpay sends signature as base64; a simple compare may not match all cases.
-        # We'll accept if signature contains computed or vice versa - best effort.
+
         if signature and computed not in signature and signature not in computed:
             return jsonify({'status': 'invalid signature'}), 400
+
     event = request.json or {}
-    # handle payment link paid
-    if event.get('event') == 'payment_link.paid' or event.get('event') == 'payment_link.updated':
-        obj = event.get('payload', {}).get('payment_link', {}).get('entity', {})
-        pid = obj.get('id')
-        # find payment in DB
-        for p in DB['payments']:
-            if p.get('razorpay_id') == pid:
-                p['status'] = 'verified'
-                p['razorpay_payload'] = obj
+    event_type = event.get('event')
+
+    # Only process payment_link.paid event
+    if event_type == "payment_link.paid":
+        entity = event.get("payload", {}).get("payment_link", {}).get("entity", {})
+        pid = entity.get("id")
+
+        # Find matching payment
+        for p in DB["payments"]:
+            if p.get("razorpay_id") == pid:
+
+                p["status"] = "verified"
+                p["razorpay_payload"] = entity
                 save_db(DB)
-                # send link to user
+
+                # CORRECT async calls inside Flask
                 try:
-                    # use bot to send link
-                    threading.Thread(target=lambda: app_instance.create_task(send_link_to_user(p['user_id'], p['package']))).start()
+                    import asyncio
+                    loop = app_instance._application_loop  # PTB application loop
+
+                    asyncio.run_coroutine_threadsafe(
+                        send_link_to_user(p["user_id"], p["package"]),
+                        loop
+                    )
                 except Exception as e:
-                    print('notify bot failed', e)
+                    print("Webhook async error:", e)
+
                 break
-    return jsonify({'status': 'ok'})
+
+    return jsonify({"status": "ok"})
+
 
 # -------------------- Utilities --------------------
 
