@@ -268,13 +268,21 @@ def create_razorpay_payment_link(amount_paise: int, description: str):
     if not (RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET):
         print("Razorpay keys missing")
         return None
+
+    # STANDARD PAYMENT LINK + FORCE UPI ONLY CHECKOUT
     payload = {
         "amount": amount_paise,
         "currency": "INR",
         "description": description,
-        "options": {"checkout": {"method": ["upi", "card", "netbanking"]}},
-        "expire_by": int(time.time()) + 3600 * 24,
+        "options": {
+            "checkout": {
+                # User will ONLY see UPI on payment page
+                "method": ["upi"]
+            }
+        },
+        "expire_by": int(time.time()) + 3600 * 24  # expires in 24 hrs
     }
+
     try:
         r = requests.post(
             f"{RAZORPAY_API_BASE}/payment_links",
@@ -284,6 +292,7 @@ def create_razorpay_payment_link(amount_paise: int, description: str):
         )
         r.raise_for_status()
         return r.json()
+
     except Exception as e:
         print("create_razorpay_payment_link failed:", e)
         return None
