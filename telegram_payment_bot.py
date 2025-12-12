@@ -452,6 +452,9 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Total payments: {total}\nVerified: {verified}")
 
 # -------------------- Flask webhook for Razorpay --------------------
+@app.route("/")
+def home():
+    return "Bot running", 200
 
 @app.route('/razorpay_webhook', methods=['POST'])
 def razorpay_webhook():
@@ -520,9 +523,10 @@ def run_flask():
     app.run(host='0.0.0.0', port=port)
 
 if __name__ == '__main__':
-    # start webhook server thread
+    print("🚀 Starting Flask thread...")
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    print('Flask webhook started in thread')
-    # start the Telegram bot (polling)
+
+    print("🤖 Starting Telegram bot polling...")
     application.run_polling()
+
