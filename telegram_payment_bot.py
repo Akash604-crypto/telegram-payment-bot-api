@@ -207,40 +207,41 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         method = method.replace("pay_", "")
         # Record an entry in DB with status pending
         entry = {
-            "user_id": user.id,
-            "username": user.username or "",
-            "package": package,
-            "method": method,
-            "status": "pending",
-            "created_at": int(time.time()),
-        }
+    "payment_id": f"p_{int(time.time()*1000)}",
+    "user_id": user.id,
+    "username": user.username or "",
+    "package": package,
+    "method": method,
+    "status": "pending",
+    "created_at": int(time.time()),
+}
+
         DB["payments"].append(entry)
         save_db(DB)
 
-        # If UPI -> create razorpay payment link and send to user (automatic)
-       if method == "upi":
-    amount = SETTINGS["prices"][package]["upi"] * 100  # INR → paise
-    link = create_razorpay_payment_link(amount, f"{package.upper()} bundle for {user.id}")
+        # If UPI → create Razorpay payment link
+        if method == "upi":
+            amount = SETTINGS["prices"][package]["upi"] * 100  # INR → paise
+            link = create_razorpay_payment_link(amount, f"{package.upper()} bundle for {user.id}")
 
-    if not link:
-        return await query.message.reply_text(
-            "Failed to create payment link. Please try again later or contact admin."
-        )
+            if not link:
+                return await query.message.reply_text(
+                    "Failed to create payment link. Please try again later or contact admin."
+                )
 
-    # ⭐ FIX 1: Store link + razorpay_id correctly
-    entry["payment_link"] = link.get("short_url")
-    entry["razorpay_id"] = link.get("id")  # Razorpay ALWAYS returns this
+            entry["payment_link"] = link.get("short_url")
+            entry["razorpay_id"] = link.get("id")
 
-    # ⭐ FIX 2: Save DB now
-    save_db(DB)
+            save_db(DB)
 
-    await query.message.reply_text(
-        f"UPI payment link created.\nPay here:\n{entry['payment_link']}\n\n"
-        "After payment is successful, bot will auto-deliver your access link."
-    )
+            await query.message.reply_text(
+                f"UPI payment link created.\nPay here:\n{entry['payment_link']}\n\n"
+                "After payment is successful, bot will auto-deliver your access link."
+            )
 
-    await notify_admin_of_pending(entry)
-    return
+            await notify_admin_of_pending(entry)
+            return
+
 
 
         # Crypto and Remitly - manual
@@ -250,30 +251,112 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # notify admin with user info to verify manually
             await notify_admin_of_pending(entry)
             return
+        
+async def admin_review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    try:
+        await query.answer()
+    except:
+        pass
+
+    data = query.data
+    admin_id = query.from_user.id
+
+    # Only admin can approve/decline
+    if admin_id != SETTINGS["admin_chat_id"]:
+        return await query.message.reply_text("❌ You are not authorized.")
+
+    # approve:payment_id OR decline:payment_id
+    action, pay_id = data.split(":")
+
+    # Find payment
+    for p in DB["payments"]:
+        if p["payment_id"] == pay_id:
+
+            # APPROVE
+            if action == "approve":
+                p["status"] = "verified"
+                save_db(DB)
+
+                await send_link_to_user(p["user_id"], p["package"])
+
+                return await query.message.reply_text(
+                    f"✅ Approved.\nAccess link sent to user {p['user_id']}."
+                )
+
+            # DECLINE
+            if action == "decline":
+                p["status"] = "declined"
+                save_db(DB)
+
+                await app_instance.bot.send_message(
+                    chat_id=p["user_id"],
+                    text="❌ Payment declined.\nInvalid or incomplete proof.\n"
+                         "If this is a mistake, contact @Dark123222_bot.",
+                )
+
+                return await query.message.reply_text("❌ Payment declined.")
+
+    return await query.message.reply_text("Payment not found.")
+
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Accept user-uploaded screenshots as proof for manual payments
     msg = update.message
-    if msg.photo:
-        # find last pending manual payment by this user
-        user_id = msg.from_user.id
+    user_id = msg.from_user.id
+
+    # ❌ If user sends ONLY TEXT → reject
+    if msg.text and not msg.photo and not msg.document:
+        return await msg.reply_text(
+            "❌ Text-only proof is not accepted.\n"
+            "Please upload a *screenshot or document* as proof."
+        )
+
+    # 📸 If screenshot or document proof uploaded
+    if msg.photo or msg.document:
+        # Find the latest pending manual payment
         for p in reversed(DB["payments"]):
-            if p["user_id"] == user_id and p["status"] == "pending" and p["method"] in ("crypto", "remitly"):
-                # download photo
-                file = await msg.photo[-1].get_file()
-                saved = DATA_DIR / f"proof_{user_id}_{int(time.time())}.jpg"
-                await file.download_to_drive(str(saved))
-                p.setdefault("proof_files", []).append(str(saved))
+            if (
+                p["user_id"] == user_id
+                and p["status"] == "pending"
+                and p["method"] in ("crypto", "remitly")
+            ):
+                # Get the file (photo/document)
+                file_obj = msg.photo[-1] if msg.photo else msg.document
+                file = await file_obj.get_file()
+
+                save_path = DATA_DIR / f"proof_{user_id}_{int(time.time())}.jpg"
+                await file.download_to_drive(str(save_path))
+
+                p.setdefault("proof_files", []).append(str(save_path))
                 save_db(DB)
-                await msg.reply_text("Proof received. Admin will review and approve/decline.")
-                # notify admin
+
+                # Send admin approval buttons
+                buttons = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ APPROVE", callback_data=f"approve:{p['payment_id']}"),
+                        InlineKeyboardButton("❌ DECLINE", callback_data=f"decline:{p['payment_id']}")
+                    ]
+                ])
+
                 await app_instance.bot.send_message(
                     chat_id=SETTINGS["admin_chat_id"],
-                    text=f"New proof received for user {user_id} ({msg.from_user.username or 'no-username'})\nPackage: {p['package']}\nMethod: {p['method']}",
+                    text=(
+                        f"📩 *New Payment Proof Received*\n"
+                        f"User: {user_id}\n"
+                        f"Package: {p['package']}\n"
+                        f"Method: {p['method']}"
+                    ),
+                    reply_markup=buttons,
+                    parse_mode="Markdown"
                 )
-                return
-    # fallback
+
+                return await msg.reply_text("📸 Screenshot received. Admin will verify shortly.")
+
+    # ----------------------
+    # Fallback: nothing matched
+    # ----------------------
     return
+
 
 # -------------------- Razorpay helpers --------------------
 
@@ -460,15 +543,14 @@ def razorpay_webhook():
 
     # Verify signature
     if RAZORPAY_WEBHOOK_SECRET:
+        computed = base64.b64encode(
+            hmac.new(RAZORPAY_WEBHOOK_SECRET.encode(), payload, hashlib.sha256).digest()
+        ).decode()
 
+        if computed != signature:
+            print("❌ Invalid Razorpay signature")
+            return jsonify({"status": "invalid signature"}), 400
 
-computed = base64.b64encode(
-    hmac.new(RAZORPAY_WEBHOOK_SECRET.encode(), payload, hashlib.sha256).digest()
-).decode()
-
-if computed != signature:
-    print("❌ Invalid Razorpay signature")
-    return jsonify({"status": "invalid signature"}), 400
 
 
     event = request.json or {}
@@ -534,7 +616,12 @@ application.add_handler(CommandHandler('setprice', setprice))
 application.add_handler(CommandHandler('setlink', setlink))
 application.add_handler(CommandHandler('setpaymentinfo', setpaymentinfo))
 application.add_handler(CommandHandler('stats', stats))
-application.add_handler(MessageHandler(filters.PHOTO, message_handler))
+application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, message_handler))
+application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
+
+
+
+
 
 # store global app instance for webhook thread to use
 app_instance = application
@@ -550,5 +637,6 @@ if __name__ == '__main__':
     flask_thread.start()
 
     print("🤖 Starting Telegram bot polling...")
+    app_instance.initialize()
     application.run_polling()
 
