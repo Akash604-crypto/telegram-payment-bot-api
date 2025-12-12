@@ -642,7 +642,6 @@ def build_manual_payment_text(package, method):
 application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
 application.add_handler(CommandHandler('start', start_handler))
-application.add_handler(CallbackQueryHandler(callback_handler))
 application.add_handler(CommandHandler('helpadmin', helpadmin))
 application.add_handler(CommandHandler('listpayments', listpayments))
 application.add_handler(CommandHandler('verify', verify))
@@ -653,6 +652,7 @@ application.add_handler(CommandHandler('setpaymentinfo', setpaymentinfo))
 application.add_handler(CommandHandler('stats', stats))
 application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, message_handler))
 application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
+application.add_handler(CallbackQueryHandler(callback_handler))
 
 
 
