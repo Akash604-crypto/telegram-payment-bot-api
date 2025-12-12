@@ -438,11 +438,39 @@ async def notify_admin_of_pending(entry):
     await app_instance.bot.send_message(chat_id=SETTINGS["admin_chat_id"], text=text)
 
 async def send_link_to_user(user_id: int, package: str):
+    if package == "both":
+        vip = SETTINGS["links"].get("vip", "")
+        dark = SETTINGS["links"].get("dark", "")
+
+        if not vip or not dark:
+            await app_instance.bot.send_message(
+                chat_id=user_id,
+                text="❌ VIP or DARK link not set. Contact admin."
+            )
+            return
+
+        await app_instance.bot.send_message(
+            chat_id=user_id,
+            text=f"✅ Your BOTH ACCESS:\n\n"
+                 f"🔹 VIP Link:\n{vip}\n\n"
+                 f"🔹 DARK Link:\n{dark}"
+        )
+        return
+
+    # normal flow for vip or dark
     link = SETTINGS["links"].get(package, "")
     if not link:
-        await app_instance.bot.send_message(chat_id=user_id, text="Sorry, access link is not set. Contact admin.")
+        await app_instance.bot.send_message(
+            chat_id=user_id,
+            text="Sorry, access link is not set. Contact admin."
+        )
         return
-    await app_instance.bot.send_message(chat_id=user_id, text=f"✅ Your {package.upper()} access link:\n{link}")
+
+    await app_instance.bot.send_message(
+        chat_id=user_id,
+        text=f"✅ Your {package.upper()} access link:\n{link}"
+    )
+
 
 # Admin command implementations
 
@@ -637,11 +665,22 @@ def build_manual_payment_text(package, method):
         return f"{pi.get('remitly_info')}\nHow to: {pi.get('remitly_how_to')}\nAfter sending, reply with proof. Admin will verify."
     return "Manual payment - please follow instructions from admin."
 
+
+
 # -------------------- Startup: register handlers & run --------------------
 
 application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+# Start command
 application.add_handler(CommandHandler('start', start_handler))
+
+# 1) User callbacks FIRST (choose bundle, select payment)
+application.add_handler(CallbackQueryHandler(callback_handler, pattern="^(choose_|pay_|cancel)"))
+
+# 2) Admin approve/decline SECOND
+application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
+
+# 3) Admin commands
 application.add_handler(CommandHandler('helpadmin', helpadmin))
 application.add_handler(CommandHandler('listpayments', listpayments))
 application.add_handler(CommandHandler('verify', verify))
@@ -650,28 +689,25 @@ application.add_handler(CommandHandler('setprice', setprice))
 application.add_handler(CommandHandler('setlink', setlink))
 application.add_handler(CommandHandler('setpaymentinfo', setpaymentinfo))
 application.add_handler(CommandHandler('stats', stats))
+
+# 4) Screenshot/document proof handler
 application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, message_handler))
-application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
-application.add_handler(CallbackQueryHandler(callback_handler))
 
-
-
-
-
-# store global app instance for webhook thread to use
+# Store instance for webhook thread
 app_instance = application
 
 
 def run_flask():
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     print("🚀 Starting Flask webhook server thread...")
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
+    threading.Thread(target=run_flask, daemon=True).start()
 
     print("🤖 Starting Telegram bot polling...")
     app_instance.initialize()
     application.run_polling()
+
 
