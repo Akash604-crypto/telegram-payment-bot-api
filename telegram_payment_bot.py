@@ -224,7 +224,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if link:
                 # store link ref
                 entry["payment_link"] = link["short_url"]
-                entry["razorpay_id"] = link.get("id")
+               entry["razorpay_id"] = link.get("id") or link.get("entity", {}).get("id")
+
                 save_db(DB)
                 await query.message.reply_text(
                     f"UPI payment link created. Pay using this link:\n{link['short_url']}\nAfter payment the bot will auto-deliver the access link.")
@@ -440,7 +441,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Total payments: {total}\nVerified: {verified}")
 
 # -------------------- Flask webhook for Razorpay --------------------
-# -------------------- Flask webhook for Razorpay --------------------
 @app.route("/")
 def home():
     return "OK", 200
@@ -451,7 +451,7 @@ def razorpay_webhook():
     payload = request.get_data()
     signature = request.headers.get('X-Razorpay-Signature', '')
 
-    # verify signature
+    # Verify signature
     if RAZORPAY_WEBHOOK_SECRET:
         computed = hmac.new(
             RAZORPAY_WEBHOOK_SECRET.encode(),
@@ -460,28 +460,32 @@ def razorpay_webhook():
         ).hexdigest()
 
         if signature and computed not in signature and signature not in computed:
+            print("❌ Invalid Razorpay signature")
             return jsonify({'status': 'invalid signature'}), 400
 
     event = request.json or {}
-    event_type = event.get('event')
+    event_type = event.get("event")
 
-    # Only process payment_link.paid event
-    if event_type == "payment_link.paid":
+    # Accept BOTH events
+    if event_type in ["payment_link.paid", "payment_link.updated"]:
         entity = event.get("payload", {}).get("payment_link", {}).get("entity", {})
         pid = entity.get("id")
 
-        # Find matching payment
+        print("🔔 RAZORPAY WEBHOOK RECEIVED FOR:", pid)
+
+        # Match payment in DB
         for p in DB["payments"]:
             if p.get("razorpay_id") == pid:
-
                 p["status"] = "verified"
                 p["razorpay_payload"] = entity
                 save_db(DB)
 
-                # CORRECT async calls inside Flask
+                print("✅ Payment matched in DB, sending access link...")
+
+                # Safe async call
                 try:
                     import asyncio
-                    loop = app_instance._application_loop  # PTB application loop
+                    loop = app_instance._application_loop
 
                     asyncio.run_coroutine_threadsafe(
                         send_link_to_user(p["user_id"], p["package"]),
@@ -491,8 +495,11 @@ def razorpay_webhook():
                     print("Webhook async error:", e)
 
                 break
+        else:
+            print("❌ No matching razorpay_id found in DB")
 
     return jsonify({"status": "ok"})
+
 
 
 # -------------------- Utilities --------------------
