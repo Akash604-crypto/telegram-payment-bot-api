@@ -12,11 +12,11 @@ if not key or not secret:
 auth = (key, secret)
 
 payload = {
-    "amount": 49900,  # 100 paise = ₹1
+    "amount": 49900,
     "currency": "INR",
-    "description": "test",
-    "options": {"checkout": {"method": ["upi"]}}
+    "description": "Standard Link Test"
 }
+
 
 print("➡️ Sending request to Razorpay...")
 
