@@ -12,7 +12,7 @@ if not key or not secret:
 auth = (key, secret)
 
 payload = {
-    "amount": 100,  # 100 paise = ₹1
+    "amount": 49900,  # 100 paise = ₹1
     "currency": "INR",
     "description": "test",
     "options": {"checkout": {"method": ["upi"]}}
