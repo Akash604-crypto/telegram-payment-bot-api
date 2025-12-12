@@ -598,21 +598,27 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def home():
     return "OK", 200
 
-
 @app.route('/razorpay_webhook', methods=['POST'])
 def razorpay_webhook():
-    payload = request.get_data()
-    signature = request.headers.get('X-Razorpay-Signature', '')
+    # -------- Razorpay Signature Verification ----------
+    raw_body = request.data  # exact raw body Razorpay signs
+    received_signature = request.headers.get("X-Razorpay-Signature", "").strip()
 
-    # Verify signature
-    if RAZORPAY_WEBHOOK_SECRET:
-        computed = base64.b64encode(
-            hmac.new(RAZORPAY_WEBHOOK_SECRET.encode(), payload, hashlib.sha256).digest()
-        ).decode()
+    computed_signature = base64.b64encode(
+        hmac.new(
+            RAZORPAY_WEBHOOK_SECRET.encode("utf-8"),
+            raw_body,
+            hashlib.sha256
+        ).digest()
+    ).decode().strip()
 
-        if computed != signature:
-            print("❌ Invalid Razorpay signature")
-            return jsonify({"status": "invalid signature"}), 400
+    print("Computed =", computed_signature)
+    print("Received =", received_signature)
+
+    if computed_signature != received_signature:
+        print("❌ Razorpay signature mismatch!")
+        return jsonify({"status": "invalid signature"}), 400
+    # -----------------------------------------------------
 
     event = request.json or {}
     event_type = event.get("event")
@@ -674,7 +680,6 @@ def razorpay_webhook():
                     print("⚠️ Error sending Telegram message:", e)
 
                 break
-
         else:
             print("❌ Payment not found in DB")
 
@@ -726,7 +731,8 @@ app_instance = application
 
 
 def run_flask():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
+
     app.run(host="0.0.0.0", port=port)
 
 
