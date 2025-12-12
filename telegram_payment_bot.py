@@ -273,35 +273,14 @@ RAZORPAY_API_BASE = "https://api.razorpay.com/v1"
 
 def create_razorpay_payment_link(amount_paise: int, description: str):
     if not (RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET):
-        print("Razorpay keys missing")
+        print("❌ Razorpay keys missing")
         return None
 
+    # SIMPLE & ALWAYS WORKING PAYLOAD
     payload = {
-        "type": "link",   # IMPORTANT FIX 🔥
-
         "amount": amount_paise,
         "currency": "INR",
-        "description": description,
-
-        # Razorpay requires customer object for some accounts
-        "customer": {
-            "name": "Telegram User",
-            "contact": "9999999999",
-            "email": "test@test.com"
-        },
-
-        "notify": {
-            "sms": False,
-            "email": False
-        },
-
-        "options": {
-            "checkout": {
-                "method": ["upi"]    # Force UPI only
-            }
-        },
-
-        "expire_by": int(time.time()) + 86400
+        "description": description
     }
 
     try:
@@ -311,13 +290,15 @@ def create_razorpay_payment_link(amount_paise: int, description: str):
             json=payload,
             timeout=20,
         )
-        print("RZP status:", r.status_code, r.text)
+        print("RZP response:", r.status_code, r.text)
+
         r.raise_for_status()
         return r.json()
 
     except Exception as e:
-        print("create_razorpay_payment_link failed:", e)
+        print("❌ create_razorpay_payment_link FAILED:", e)
         return None
+
 
 
 # -------------------- Admin helpers --------------------
