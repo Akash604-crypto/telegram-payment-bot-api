@@ -56,6 +56,14 @@ import hashlib
 import threading
 from typing import Dict, Any
 from pathlib import Path
+import sys
+if sys.version_info.major == 3 and sys.version_info.minor >= 12:
+    raise RuntimeError(
+        "This bot must run on Python 3.11.x. Please set runtime.txt to python-3.11.x "
+        "or change the Render service runtime. Running on Python "
+        f"{sys.version_info.major}.{sys.version_info.minor} is not supported."
+    )
+
 
 import requests
 from flask import Flask, request, jsonify
@@ -134,7 +142,8 @@ SETTINGS = load_settings()
 app = Flask(__name__)
 TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN")
 if not TELEGRAM_TOKEN:
-    raise RuntimeError("BOT_TOKEN is required as an environment variable")
+    raise RuntimeError("BOT_TOKEN is missing — set it as an environment variable in Render.")
+
 
 # Helper: build main keyboard
 
