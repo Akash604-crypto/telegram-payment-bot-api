@@ -878,11 +878,11 @@ if __name__ == "__main__":
         ApplicationBuilder()
         .token(TELEGRAM_TOKEN)
         .post_init(post_init)
-        .allowed_updates(["message", "callback_query"])
         .build()
     )
 
     app_instance = application
+
 
 
     # USER COMMANDS
@@ -895,18 +895,15 @@ if __name__ == "__main__":
 
     # CALLBACK BUTTON HANDLERS
     
+    application.add_handler(CallbackQueryHandler(adminpanel_buttons, pattern="^admin_"))
+    application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
     application.add_handler(
-    CallbackQueryHandler(callback_handler, pattern="^(choose_.*|pay_.*|cancel|help)$")
-)
+        CallbackQueryHandler(
+            callback_handler,
+            pattern="^(choose_.*|pay_[^:]+:.*|cancel|help)$"
+        )
+    )
 
-
-
-    application.add_handler(
-    CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):")
-)
-    application.add_handler(
-    CallbackQueryHandler(adminpanel_buttons, pattern="^admin_")
-)
 
     application.add_handler(CommandHandler('broadcast', broadcast_cmd))
     application.add_handler(MessageHandler(filters.PHOTO & filters.CaptionRegex("^/broadcast"), broadcast_cmd))
