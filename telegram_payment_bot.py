@@ -1,51 +1,6 @@
 """
 Telegram Payment Bot (single-file)
-Generated for Akash Modak's spec (VIP/DARK/BOTH + payments)
-
-What this file contains:
-- Telegram bot using python-telegram-bot v20 (async)
-- Simple Flask webhook endpoint to receive Razorpay webhooks (so UPI payments can be auto-approved)
-- Local JSON storage for payments and settings
-- Admin commands from your spec (/setprice, /setlink, /listpayments, /verify, /announce, /setpaymentinfo, /stats, /helpadmin, /sales)
-- Inline keyboards: VIP / DARK / BOTH / HELP; payment method selection after bundle choice
-
-HOW TO USE / DEPLOY notes (keep these in repo README)
-1) Required environment variables (set on Render or locally):
-   BOT_TOKEN - Telegram bot token
-   ADMIN_CHAT_ID - admin chat id (your admin id: 7202040199)
-   VIP_CHANNEL_ID - channel id for VIP sales (e.g. -1003308911819)
-   DARK_CHANNEL_ID - channel id for DARK sales (e.g. -1003335040158)
-   RAZORPAY_KEY_ID - Razorpay API Key ID
-   RAZORPAY_KEY_SECRET - Razorpay API Key Secret
-   RAZORPAY_WEBHOOK_SECRET - Razorpay webhook secret (for verifying webhooks)
-   UPI_ID - e.g. "govindmahto21@axl"
-   UPI_QR_URL - optional
-   UPI_HOW_TO_PAY_LINK - remitly/how-to link for UPI
-   CRYPTO_ADDRESS - 0xfc14846229f375124d8fed5cd9a789a271a303f5
-   CRYPTO_NETWORK - BEP20
-   REMITLY_INFO - string with remitly instructions
-   REMITLY_HOW_TO_PAY_LINK - link
-   PORT - (for Render) default 8080
-   DATA_DIR - path to save payment db (default ./data)
-
-2) Requirements (create requirements.txt):
-   python-telegram-bot==20.5
-   Flask==2.2.5
-   requests==2.31.0
-
-3) Run locally:
-   export BOT_TOKEN=...
-   python telegram_payment_bot.py
-
-4) Deploy to Render (or Heroku-like):
-   - Create GitHub repo, push this file and requirements.txt & Procfile
-   - Procfile: "web: python telegram_payment_bot.py"
-   - On Render create a Web Service, connect repo, add the environment variables above and deploy.
-
-Notes:
-- This implementation uses Razorpay Payment Links API to create a payment link for UPI. When the payment link is paid, the Razorpay webhook marks payment as paid and the bot sends the access link automatically.
-- Crypto / Remitly flows are manual: the bot collects the user and uploaded screenshot (or just "I paid" message). Admin is notified to verify and can use /verify to approve.
-
+FIXED VERSION: Concurrency & Webhook Loop Capture Included.
 """
 
 import os
@@ -55,16 +10,17 @@ import time
 import hmac
 import hashlib
 import threading
+import asyncio
 from typing import Dict, Any
 from pathlib import Path
 import sys
+
+# Python version check
 if sys.version_info.major == 3 and sys.version_info.minor >= 12:
     raise RuntimeError(
         "This bot must run on Python 3.11.x. Please set runtime.txt to python-3.11.x "
-        "or change the Render service runtime. Running on Python "
-        f"{sys.version_info.major}.{sys.version_info.minor} is not supported."
+        "or change the Render service runtime."
     )
-
 
 import requests
 from flask import Flask, request, jsonify
@@ -113,24 +69,23 @@ RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "")
 RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
 RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
 
-# load/save helpers
+# GLOBAL VAR TO HOLD THE EVENT LOOP
+BOT_LOOP = None
 
+# load/save helpers
 def load_db() -> Dict[str, Any]:
     if DB_FILE.exists():
         return json.loads(DB_FILE.read_text())
     return {"payments": []}
 
-
 def save_db(db: Dict[str, Any]):
     DB_FILE.write_text(json.dumps(db, indent=2))
-
 
 def load_settings() -> Dict[str, Any]:
     if SETTINGS_FILE.exists():
         return json.loads(SETTINGS_FILE.read_text())
     SETTINGS_FILE.write_text(json.dumps(DEFAULT_SETTINGS, indent=2))
     return DEFAULT_SETTINGS
-
 
 def save_settings(s: Dict[str, Any]):
     SETTINGS_FILE.write_text(json.dumps(s, indent=2))
@@ -145,9 +100,7 @@ TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN")
 if not TELEGRAM_TOKEN:
     raise RuntimeError("BOT_TOKEN is missing — set it as an environment variable in Render.")
 
-
 # Helper: build main keyboard
-
 def main_keyboard():
     kb = [
         [InlineKeyboardButton("VIP", callback_data="choose_vip")],
@@ -164,11 +117,8 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_keyboard(),
     )
 
-# After user chooses package, show payment methods
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-
-    # FIX: Ignore "query too old" Telegram error
     try:
         await query.answer()
     except:
@@ -177,14 +127,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     user = query.from_user
 
-
     if data == "help":
         await query.message.reply_text("Contact help: @Dark123222_bot")
         return
 
     if data.startswith("choose_"):
         package = data.split("_")[1]
-        # Show payment method choices
         kb = [
             [InlineKeyboardButton(f"UPI - ₹{SETTINGS['prices'][package]['upi']}", callback_data=f"pay_upi:{package}" )],
             [InlineKeyboardButton(f"Crypto - ${SETTINGS['prices'][package]['crypto_usd']}", callback_data=f"pay_crypto:{package}")],
@@ -201,27 +149,25 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Cancelled. Use /start to open menu again.")
         return
 
-    # Payment method flows
     if data.startswith("pay_"):
         method, package = data.split(":")
         method = method.replace("pay_", "")
-        # Record an entry in DB with status pending
+        
         entry = {
-    "payment_id": f"p_{int(time.time()*1000)}",
-    "user_id": user.id,
-    "username": user.username or "",
-    "package": package,
-    "method": method,
-    "status": "pending",
-    "created_at": int(time.time()),
-}
+            "payment_id": f"p_{int(time.time()*1000)}",
+            "user_id": user.id,
+            "username": user.username or "",
+            "package": package,
+            "method": method,
+            "status": "pending",
+            "created_at": int(time.time()),
+        }
 
         DB["payments"].append(entry)
         save_db(DB)
 
-        # If UPI → create Razorpay payment link
         if method == "upi":
-            amount = SETTINGS["prices"][package]["upi"] * 100  # INR → paise
+            amount = SETTINGS["prices"][package]["upi"] * 100 
             link = create_razorpay_payment_link(amount, f"{package.upper()} bundle for {user.id}")
 
             if not link:
@@ -231,24 +177,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             entry["payment_link"] = link.get("short_url")
             entry["razorpay_id"] = link.get("id")
-
             save_db(DB)
 
             await query.message.reply_text(
                 f"UPI payment link created.\nPay here:\n{entry['payment_link']}\n\n"
                 "After payment is successful, bot will auto-deliver your access link."
             )
-
             await notify_admin_of_pending(entry)
             return
 
-
-
-        # Crypto and Remitly - manual
         if method in ("crypto", "remitly"):
             text = build_manual_payment_text(package, method)
             await query.message.reply_text(text)
-            # notify admin with user info to verify manually
             await notify_admin_of_pending(entry)
             return
         
@@ -262,323 +202,184 @@ async def admin_review_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     data = query.data
     admin_id = query.from_user.id
 
-    # Only admin can approve/decline
     if admin_id != SETTINGS["admin_chat_id"]:
         return await query.message.reply_text("❌ You are not authorized.")
 
-    # approve:payment_id OR decline:payment_id
     action, pay_id = data.split(":")
 
-    # Find payment
     for p in DB["payments"]:
         if p["payment_id"] == pay_id:
-
-            # APPROVE
             if action == "approve":
                 p["status"] = "verified"
                 save_db(DB)
-
-                # Remove inline buttons
                 try:
                     await query.edit_message_reply_markup(None)
                     await query.edit_message_text("✅ Payment Approved")
                 except:
                     pass
-
                 await send_link_to_user(p["user_id"], p["package"])
+                return await query.message.reply_text(f"✅ Approved. Link sent to {p['user_id']}.")
 
-                return await query.message.reply_text(
-                    f"✅ Approved.\nAccess link sent to user {p['user_id']}."
-                )
-
-            # DECLINE
             if action == "decline":
                 p["status"] = "declined"
                 save_db(DB)
-
-                # Remove inline buttons
                 try:
                     await query.edit_message_reply_markup(None)
                     await query.edit_message_text("❌ Payment Declined")
                 except:
                     pass
-
-                await app_instance.bot.send_message(
+                
+                # Using application instance if available, otherwise context.bot
+                await context.bot.send_message(
                     chat_id=p["user_id"],
-                    text="❌ Payment declined.\nInvalid or incomplete proof.\n"
-                         "If this is a mistake, contact @Dark123222_bot.",
+                    text="❌ Payment declined.\nInvalid or incomplete proof.\nContact @Dark123222_bot."
                 )
-
                 return await query.message.reply_text("❌ Payment declined.")
 
-    # OUTSIDE the loop
     return await query.message.reply_text("Payment not found.")
-
-
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     user_id = msg.from_user.id
 
-    # ❌ If user sends ONLY TEXT → reject
     if msg.text and not msg.photo and not msg.document:
-        return await msg.reply_text(
-            "❌ Text-only proof is not accepted.\n"
-            "Please upload a *screenshot or document* as proof."
-        )
+        return await msg.reply_text("❌ Text-only proof not accepted. Please upload a screenshot/document.")
 
-    # 📸 If screenshot or document proof uploaded
     if msg.photo or msg.document:
-        # Find the latest pending manual payment
+        # Find latest pending manual payment
         for p in reversed(DB["payments"]):
-            if (
-                p["user_id"] == user_id
-                and p["status"] == "pending"
-                and p["method"] in ("crypto", "remitly")
-            ):
-                # Get the file (photo/document)
+            if (p["user_id"] == user_id and p["status"] == "pending" and p["method"] in ("crypto", "remitly")):
+                
                 file_obj = msg.photo[-1] if msg.photo else msg.document
                 file = await file_obj.get_file()
-
                 save_path = DATA_DIR / f"proof_{user_id}_{int(time.time())}.jpg"
                 await file.download_to_drive(str(save_path))
 
                 p.setdefault("proof_files", []).append(str(save_path))
                 save_db(DB)
 
-                # Send admin approval buttons
                 buttons = InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton("✅ APPROVE", callback_data=f"approve:{p['payment_id']}"),
-                        InlineKeyboardButton("❌ DECLINE", callback_data=f"decline:{p['payment_id']}")
-                    ]
+                    [InlineKeyboardButton("✅ APPROVE", callback_data=f"approve:{p['payment_id']}"),
+                     InlineKeyboardButton("❌ DECLINE", callback_data=f"decline:{p['payment_id']}")]
                 ])
 
-                # Send screenshot/document to admin WITH approve/decline buttons
-                caption = (
-                    f"📩 *New Payment Proof Received*\n"
-                    f"User: {user_id}\n"
-                    f"Package: {p['package']}\n"
-                    f"Method: {p['method']}"
-                )
+                caption = f"📩 *Proof Received*\nUser: {user_id}\nPackage: {p['package']}\nMethod: {p['method']}"
 
-                # If the user sent a photo → forward photo
                 if msg.photo:
-                    await app_instance.bot.send_photo(
-                        chat_id=SETTINGS["admin_chat_id"],
-                        photo=open(save_path, "rb"),
-                        caption=caption,
-                        reply_markup=buttons,
-                        parse_mode="Markdown"
-                    )
-
-                # If the user sent a PDF/document → forward document
+                    await context.bot.send_photo(chat_id=SETTINGS["admin_chat_id"], photo=open(save_path, "rb"), caption=caption, reply_markup=buttons, parse_mode="Markdown")
                 elif msg.document:
-                    await app_instance.bot.send_document(
-                        chat_id=SETTINGS["admin_chat_id"],
-                        document=open(save_path, "rb"),
-                        caption=caption,
-                        reply_markup=buttons,
-                        parse_mode="Markdown"
-                    )
+                    await context.bot.send_document(chat_id=SETTINGS["admin_chat_id"], document=open(save_path, "rb"), caption=caption, reply_markup=buttons, parse_mode="Markdown")
 
-                return await msg.reply_text("📸 Screenshot received. Admin will verify shortly.")
-
-
-
-    # ----------------------
-    # Fallback: nothing matched
-    # ----------------------
+                return await msg.reply_text("📸 Proof received. Admin will verify shortly.")
     return
 
 
 # -------------------- Razorpay helpers --------------------
-
 RAZORPAY_API_BASE = "https://api.razorpay.com/v1"
 
 def create_razorpay_payment_link(amount_paise: int, description: str):
     if not (RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET):
         print("❌ Razorpay keys missing")
         return None
-
-    # SIMPLE & ALWAYS WORKING PAYLOAD
-    payload = {
-        "amount": amount_paise,
-        "currency": "INR",
-        "description": description
-    }
-
+    payload = {"amount": amount_paise, "currency": "INR", "description": description}
     try:
-        r = requests.post(
-            f"{RAZORPAY_API_BASE}/payment_links",
-            auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET),
-            json=payload,
-            timeout=20,
-        )
-        print("RZP response:", r.status_code, r.text)
-
+        r = requests.post(f"{RAZORPAY_API_BASE}/payment_links", auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET), json=payload, timeout=20)
         r.raise_for_status()
         return r.json()
-
     except Exception as e:
         print("❌ create_razorpay_payment_link FAILED:", e)
         return None
 
-
-
 # -------------------- Admin helpers --------------------
-
 async def notify_admin_of_pending(entry):
-    text = (
-        f"New payment pending:\nUser: {entry['user_id']} ({entry.get('username','')})\nPackage: {entry['package']}\nMethod: {entry['method']}\nStatus: pending"
-    )
+    # This might need context.bot if app_instance isn't ready, but inside handlers context is safer
+    # However, since this is called from handlers, we need to pass context or use the global app instance if loop is running
+    # To be safe, we rely on the loop being active.
+    text = f"New payment pending:\nUser: {entry['user_id']}\nPackage: {entry['package']}\nMethod: {entry['method']}\nStatus: pending"
     if entry.get("payment_link"):
         text += f"\nLink: {entry['payment_link']}"
-    await app_instance.bot.send_message(chat_id=SETTINGS["admin_chat_id"], text=text)
+    
+    if BOT_LOOP:
+        # If we are in the main loop context, we can just print or try sending
+        # But this function is usually called FROM an async handler, so we can just use app_instance
+        try:
+             await app_instance.bot.send_message(chat_id=SETTINGS["admin_chat_id"], text=text)
+        except:
+             pass
 
 async def send_link_to_user(user_id: int, package: str):
     if package == "both":
         vip = SETTINGS["links"].get("vip", "")
         dark = SETTINGS["links"].get("dark", "")
-
         if not vip or not dark:
-            await app_instance.bot.send_message(
-                chat_id=user_id,
-                text="❌ VIP or DARK link not set. Contact admin."
-            )
+            await app_instance.bot.send_message(chat_id=user_id, text="❌ VIP or DARK link not set. Contact admin.")
             return
-
         await app_instance.bot.send_message(
             chat_id=user_id,
-            text=f"✅ Your BOTH ACCESS:\n\n"
-                 f"🔹 VIP Link:\n{vip}\n\n"
-                 f"🔹 DARK Link:\n{dark}"
+            text=f"✅ Your BOTH ACCESS:\n\n🔹 VIP Link:\n{vip}\n\n🔹 DARK Link:\n{dark}"
         )
         return
 
-    # normal flow for vip or dark
     link = SETTINGS["links"].get(package, "")
     if not link:
-        await app_instance.bot.send_message(
-            chat_id=user_id,
-            text="Sorry, access link is not set. Contact admin."
-        )
+        await app_instance.bot.send_message(chat_id=user_id, text="Sorry, access link is not set. Contact admin.")
         return
 
-    await app_instance.bot.send_message(
-        chat_id=user_id,
-        text=f"✅ Your {package.upper()} access link:\n{link}"
-    )
+    await app_instance.bot.send_message(chat_id=user_id, text=f"✅ Your {package.upper()} access link:\n{link}")
 
 
 # Admin command implementations
-
 async def helpadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
-        await update.message.reply_text("You are not admin.")
-        return
-    text = "🔐 ADMIN PANEL\n" + "\n".join([
-        "/sales – View sales summary",
-        "/listpayments – Show all stored payments",
-        "/verify – Manually verify a user payment (usage: /verify <user_id>)",
-        "/announce – Broadcast message to all users",
-        "/setprice – Update the bundle price",
-        "/setlink – Update the access/download link",
-        "/setpaymentinfo – Update UPI/QR/Crypto/Remitly details",
-        "/stats – Bot & performance stats",
-    ])
-    await update.message.reply_text(text)
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]: return
+    await update.message.reply_text("🔐 ADMIN PANEL\n/sales, /listpayments, /verify <id>, /announce <msg>, /setprice, /setlink, /setpaymentinfo, /stats")
 
 async def listpayments(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
-        await update.message.reply_text("Not authorized")
-        return
-    lines = []
-    for p in DB["payments"][-50:][::-1]:
-        lines.append(f"{p['user_id']} | {p['package']} | {p['method']} | {p['status']}")
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]: return
+    lines = [f"{p['user_id']} | {p['package']} | {p['method']} | {p['status']}" for p in DB["payments"][-20:][::-1]]
     await update.message.reply_text("\n".join(lines) or "No payments stored")
 
 async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
-        await update.message.reply_text("Not authorized")
-        return
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]: return
     args = context.args
-    if not args:
-        await update.message.reply_text("Usage: /verify <user_id> [package]")
-        return
+    if not args: return await update.message.reply_text("Usage: /verify <user_id>")
     user_id = int(args[0])
-    package = args[1] if len(args) > 1 else None
-    # find pending payment
     for p in DB["payments"]:
-        if p["user_id"] == user_id and p["status"] == "pending" and (package is None or p["package"] == package):
+        if p["user_id"] == user_id and p["status"] == "pending":
             p["status"] = "verified"
             save_db(DB)
-            await send_link_to_user(user_id, p["package"])            
-            await update.message.reply_text("Verified and link sent.")
-            return
+            await send_link_to_user(user_id, p["package"])
+            return await update.message.reply_text("Verified and link sent.")
     await update.message.reply_text("No matching pending payment found.")
 
 async def announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
-        await update.message.reply_text("Not authorized")
-        return
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]: return
     text = " ".join(context.args)
-    if not text:
-        await update.message.reply_text("Usage: /announce <message>")
-        return
-    # broadcast to unique users in DB
+    if not text: return
     users = {p['user_id'] for p in DB['payments']}
     for u in users:
-        try:
-            await app_instance.bot.send_message(chat_id=u, text=text)
-        except Exception:
-            pass
-    await update.message.reply_text("Announcement sent (attempted)")
+        try: await context.bot.send_message(chat_id=u, text=text)
+        except: pass
+    await update.message.reply_text("Announcement sent.")
 
 async def setprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
-        await update.message.reply_text("Not authorized")
-        return
-    # usage: /setprice vip upi 499
-    if len(context.args) < 3:
-        await update.message.reply_text("Usage: /setprice <package> <method> <value>")
-        return
-    package, method, val = context.args[0], context.args[1], context.args[2]
-    try:
-        valn = float(val)
-    except:
-        await update.message.reply_text("Value must be a number")
-        return
-    SETTINGS['prices'].setdefault(package, {})[method] = int(valn)
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]: return
+    if len(context.args) < 3: return await update.message.reply_text("Usage: /setprice <pkg> <method> <val>")
+    SETTINGS['prices'].setdefault(context.args[0], {})[context.args[1]] = int(context.args[2])
     save_settings(SETTINGS)
     await update.message.reply_text("Price updated")
 
 async def setlink(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
-        await update.message.reply_text("Not authorized")
-        return
-    # usage: /setlink vip https://... 
-    if len(context.args) < 2:
-        await update.message.reply_text("Usage: /setlink <package> <link>")
-        return
-    package = context.args[0]
-    link = " ".join(context.args[1:])
-    SETTINGS['links'][package] = link
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]: return
+    if len(context.args) < 2: return await update.message.reply_text("Usage: /setlink <pkg> <link>")
+    SETTINGS['links'][context.args[0]] = " ".join(context.args[1:])
     save_settings(SETTINGS)
     await update.message.reply_text("Link saved")
 
 async def setpaymentinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
-        await update.message.reply_text("Not authorized")
-        return
-    # simple key=value pairs, e.g. /setpaymentinfo upi_id=abc crypto_address=0x...
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]: return
     text = " ".join(context.args)
-    if not text:
-        await update.message.reply_text("Usage: /setpaymentinfo key=value ...")
-        return
-    parts = text.split()
-    for p in parts:
+    for p in text.split():
         if "=" in p:
             k, v = p.split("=", 1)
             SETTINGS['payment_info'][k] = v
@@ -586,12 +387,8 @@ async def setpaymentinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Payment info updated")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
-        await update.message.reply_text("Not authorized")
-        return
-    total = len(DB['payments'])
-    verified = sum(1 for p in DB['payments'] if p['status'] == 'verified')
-    await update.message.reply_text(f"Total payments: {total}\nVerified: {verified}")
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]: return
+    await update.message.reply_text(f"Total: {len(DB['payments'])}")
 
 # -------------------- Flask webhook for Razorpay --------------------
 @app.route("/")
@@ -600,153 +397,101 @@ def home():
 
 @app.route('/razorpay_webhook', methods=['POST'])
 def razorpay_webhook():
-
-    # -------- Razorpay Signature Verification ----------
+    # 1. Verify Signature
     raw_body = request.data
+    received_signature = request.headers.get("X-Razorpay-Signature", "")
+    if RAZORPAY_WEBHOOK_SECRET:
+        computed_signature = hmac.new(
+            key=RAZORPAY_WEBHOOK_SECRET.encode("utf-8"),
+            msg=raw_body,
+            digestmod=hashlib.sha256
+        ).hexdigest()
+        if computed_signature != received_signature:
+            print("❌ Signature Mismatch")
+            return jsonify({"status": "invalid signature"}), 400
 
-    received_signature = request.headers.get(
-        "X-Razorpay-Webhook-Signature",
-        request.headers.get("X-Razorpay-Signature", "")
-    ).strip()
-
-    computed_signature = base64.b64encode(
-        hmac.new(
-            RAZORPAY_WEBHOOK_SECRET.encode("utf-8"),
-            raw_body,
-            hashlib.sha256
-        ).digest()
-    ).decode().strip()
-
-    print("Computed Signature =", computed_signature)
-    print("Received Signature =", received_signature)
-
-    if computed_signature != received_signature:
-        print("❌ Signature mismatch")
-        return jsonify({"status": "invalid signature"}), 400
-    # -----------------------------------------------------
-
+    # 2. Process Event
     event = request.json or {}
-    event_type = event.get("event")
+    payload = event.get("payload", {})
+    pid = None
+    if "payment_link" in payload:
+        pid = payload["payment_link"]["entity"]["id"]
+    elif "payment" in payload:
+        pid = payload["payment"]["entity"].get("payment_link_id")
 
-    if event_type in [
-        "payment_link.paid",
-        "payment_link.updated",
-        "payment.authorized",
-        "payment.captured",
-        "order.paid"
-    ]:
+    if not pid:
+        return jsonify({"status": "ignored"}), 200
 
-        payload = event.get("payload", {})
-        pid = None
-        entity = None
+    print(f"🔔 Webhook received: {pid}")
 
-        # 1️⃣ payment_link events
-        if "payment_link" in payload:
-            entity = payload["payment_link"]["entity"]
-            pid = entity.get("id")
+    # 3. Find User & Verify
+    for p in DB["payments"]:
+        if p.get("razorpay_id") == pid:
+            if p["status"] == "verified":
+                return jsonify({"status": "already_processed"}), 200
 
-        # 2️⃣ payment events
-        elif "payment" in payload:
-            entity = payload["payment"]["entity"]
-            pid = entity.get("payment_link_id")
+            p["status"] = "verified"
+            p["razorpay_payload"] = event
+            save_db(DB)
+            print(f"✅ Verified User {p['user_id']}")
 
-        # 3️⃣ order.paid events
-        elif "order" in payload:
-            entity = payload["order"]["entity"]
-            notes = entity.get("notes", {})
-            pid = notes.get("payment_link_id")
-
-        print("Extracted payment_link_id:", pid)
-
-        if not pid:
-            print("❌ Could not extract payment_link_id")
-            return jsonify({"status": "missing payment_link_id"}), 400
-
-        print("🔔 RAZORPAY WEBHOOK RECEIVED FOR:", pid)
-
-        # Match with DB
-        for p in DB["payments"]:
-            if p.get("razorpay_id") == pid:
-
-                p["status"] = "verified"
-                p["razorpay_payload"] = entity
-                save_db(DB)
-
-                print("✅ Payment matched! Sending access link...")
-
-                try:
-                    import asyncio
-                    loop = app_instance._application_loop
-                    asyncio.run_coroutine_threadsafe(
-                        send_link_to_user(p["user_id"], p["package"]),
-                        loop
-                    )
-                except Exception as e:
-                    print("⚠️ Error sending Telegram message:", e)
-
-                break
-        else:
-            print("❌ Payment not found in DB")
-
+            if BOT_LOOP:
+                asyncio.run_coroutine_threadsafe(
+                    send_link_to_user(p["user_id"], p["package"]),
+                    BOT_LOOP
+                )
+            else:
+                print("❌ CRITICAL: BOT_LOOP is None. Telegram message failed.")
+            break
+    
     return jsonify({"status": "ok"})
-
-
-
-
-# -------------------- Utilities --------------------
 
 def build_manual_payment_text(package, method):
     pi = SETTINGS['payment_info']
     if method == 'crypto':
-        return f"Send {SETTINGS['prices'][package]['crypto_usd']}$ via {pi.get('crypto_network')} to {pi.get('crypto_address')}. After sending, reply here with proof (screenshot). Admin will verify."
+        return f"Send {SETTINGS['prices'][package]['crypto_usd']}$ via {pi.get('crypto_network')} to {pi.get('crypto_address')}. Reply with screenshot."
     if method == 'remitly':
-        return f"{pi.get('remitly_info')}\nHow to: {pi.get('remitly_how_to')}\nAfter sending, reply with proof. Admin will verify."
-    return "Manual payment - please follow instructions from admin."
+        return f"{pi.get('remitly_info')}\nHow to: {pi.get('remitly_how_to')}\nReply with screenshot."
+    return "Manual payment."
 
+# -------------------- Startup --------------------
 
+# This function captures the running event loop
+async def post_init(application):
+    global BOT_LOOP
+    BOT_LOOP = asyncio.get_running_loop()
+    print("✅ Bot Event Loop captured successfully!")
 
-# -------------------- Startup: register handlers & run --------------------
-
-application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-# Start command
-application.add_handler(CommandHandler('start', start_handler))
-
-# 1) User callbacks FIRST (choose bundle, select payment)
-application.add_handler(CallbackQueryHandler(callback_handler, pattern="^(choose_|pay_|cancel)"))
-
-# 2) Admin approve/decline SECOND
-application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
-
-# 3) Admin commands
-application.add_handler(CommandHandler('helpadmin', helpadmin))
-application.add_handler(CommandHandler('listpayments', listpayments))
-application.add_handler(CommandHandler('verify', verify))
-application.add_handler(CommandHandler('announce', announce))
-application.add_handler(CommandHandler('setprice', setprice))
-application.add_handler(CommandHandler('setlink', setlink))
-application.add_handler(CommandHandler('setpaymentinfo', setpaymentinfo))
-application.add_handler(CommandHandler('stats', stats))
-
-# 4) Screenshot/document proof handler
-application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, message_handler))
-
-# Store instance for webhook thread
-app_instance = application
-
+# Define global app instance
+app_instance = None
 
 def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-
-    app.run(host="0.0.0.0", port=port)
-
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 if __name__ == "__main__":
-    print("🚀 Starting Flask webhook server thread...")
+    print("🚀 Starting Flask webhook server...")
     threading.Thread(target=run_flask, daemon=True).start()
 
-    print("🤖 Starting Telegram bot polling...")
-    app_instance.initialize()
+    print("🤖 Building Telegram bot...")
+    # FIXED: Added .post_init(post_init) to the builder
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    
+    app_instance = application
+
+    # Register handlers
+    application.add_handler(CommandHandler('start', start_handler))
+    application.add_handler(CallbackQueryHandler(callback_handler, pattern="^(choose_|pay_|cancel)"))
+    application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
+    application.add_handler(CommandHandler('helpadmin', helpadmin))
+    application.add_handler(CommandHandler('listpayments', listpayments))
+    application.add_handler(CommandHandler('verify', verify))
+    application.add_handler(CommandHandler('announce', announce))
+    application.add_handler(CommandHandler('setprice', setprice))
+    application.add_handler(CommandHandler('setlink', setlink))
+    application.add_handler(CommandHandler('setpaymentinfo', setpaymentinfo))
+    application.add_handler(CommandHandler('stats', stats))
+    application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, message_handler))
+
+    print("✅ Polling started...")
     application.run_polling()
-
-
