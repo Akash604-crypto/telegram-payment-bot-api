@@ -33,6 +33,7 @@ from telegram.ext import (
 )
 
 # -------------------- Configuration & storage --------------------
+COUNTDOWN_TASKS = {}
 DATA_DIR = Path(os.environ.get("DATA_DIR", "./data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_FILE = DATA_DIR / "payments.json"
@@ -128,29 +129,35 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     user = query.from_user
 
+    # ----- HELP -----
     if data == "help":
         await query.message.reply_text("Contact help: @Dark123222_bot")
         return
 
+    # ----- PACKAGE SELECTION -----
     if data.startswith("choose_"):
         package = data.split("_")[1]
         kb = [
-            [InlineKeyboardButton(f"UPI (Fast/Auto) - ₹{SETTINGS['prices'][package]['upi']}", callback_data=f"pay_upi:{package}")],
-            [InlineKeyboardButton(f"Crypto - ${SETTINGS['prices'][package]['crypto_usd']}", callback_data=f"pay_crypto:{package}")],
-            [InlineKeyboardButton(f"Remitly - ₹{SETTINGS['prices'][package]['remitly']}", callback_data=f"pay_remitly:{package}")],
+            [InlineKeyboardButton(f"UPI (Fast/Auto) - ₹{SETTINGS['prices'][package]['upi']}",
+                                  callback_data=f"pay_upi:{package}")],
+            [InlineKeyboardButton(f"Crypto - ${SETTINGS['prices'][package]['crypto_usd']}",
+                                  callback_data=f"pay_crypto:{package}")],
+            [InlineKeyboardButton(f"Remitly - ₹{SETTINGS['prices'][package]['remitly']}",
+                                  callback_data=f"pay_remitly:{package}")],
             [InlineKeyboardButton("Cancel", callback_data="cancel")],
         ]
         await query.message.reply_text(
-            f"Select Payment Method for {package.upper()}:",
+            f"Select Payment Method for {package.upper()}",
             reply_markup=InlineKeyboardMarkup(kb)
         )
         return
 
+    # ----- CANCEL -----
     if data == "cancel":
         await query.message.reply_text("Menu closed. Use /start to reopen.")
         return
 
-    # ---------------- PAYMENT METHOD SELECTION ----------------
+    # ----- PAYMENT METHOD SELECTED -----
     if data.startswith("pay_"):
         method, package = data.split(":")
         method = method.replace("pay_", "")
@@ -165,45 +172,72 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "created_at": int(time.time()),
         }
 
-        # ---------------- UPI AUTO QR ----------------
+        # ---------- UPI (WITH 10 MIN COUNTDOWN) ----------
         if method == "upi":
             amount = SETTINGS["prices"][package]["upi"]
 
-            # Step 1 → Inform user
             msg1 = await query.message.reply_text("⏳ Creating QR code...")
 
-            # Step 2 → Create QR
             qr_resp = create_razorpay_smart_qr(amount, user.id, package)
             if not qr_resp:
                 await msg1.edit_text("❌ System Busy. Try again later.")
                 return
 
-            # Step 3 → Save entry
             entry["razorpay_qr_id"] = qr_resp["id"]
             DB["payments"].append(entry)
             save_db(DB)
 
-            # Step 4 → Inform before sending
             await msg1.edit_text("📤 Sending QR code...")
 
-            # Step 5 → Send QR
-            await query.message.reply_photo(
-                photo=qr_resp["image_url"],
-                caption=(
-                    f"✅ **SCAN & PAY ₹{amount}**\n\n"
-                    f"• Auto-detect payment\n"
-                    f"• No need to send screenshot\n"
-                    f"• Access link will be delivered instantly after payment"
-                )
+            caption_text = (
+                f"✅ **SCAN & PAY ₹{amount}**\n"
+                f"• Auto-detect payment\n"
+                f"• Do NOT send screenshot\n"
             )
+
+            qr_msg = await query.message.reply_photo(
+                photo=qr_resp["image_url"],
+                caption=caption_text,
+                parse_mode="Markdown"
+            )
+
+            entry["caption_text"] = caption_text
+            entry["chat_id"] = qr_msg.chat.id
+            entry["message_id"] = qr_msg.message_id
+            save_db(DB)
+
+            # Start 10-minute countdown
+            COUNTDOWN_TASKS[entry["payment_id"]] = asyncio.create_task(
+                start_countdown(entry["payment_id"], qr_msg.chat.id, qr_msg.message_id, 600)
+            )
+
             return
 
-        # ---------------- MANUAL PAYMENT METHODS (CRYPTO/REMITLY) ----------------
+        # ---------- MANUAL PAYMENTS (CRYPTO / REMITLY — 30 MIN COUNTDOWN) ----------
         DB["payments"].append(entry)
         save_db(DB)
 
-        text = build_manual_payment_text(package, method)
-        await query.message.reply_text(text)
+        caption_text = build_manual_payment_text(package, method)
+
+        msg2 = await query.message.reply_text(
+            caption_text,
+            parse_mode="Markdown"
+        )
+
+        entry["caption_text"] = caption_text
+        entry["chat_id"] = msg2.chat.id
+        entry["message_id"] = msg2.message_id
+        save_db(DB)
+
+        # Start 30-min countdown
+        COUNTDOWN_TASKS[entry["payment_id"]] = asyncio.create_task(
+            start_countdown(entry["payment_id"], msg2.chat.id, msg2.message_id, 1800)
+        )
+
+        return
+
+
+
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -246,24 +280,31 @@ async def admin_review_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     action, pay_id = query.data.split(":")
 
+    # Stop countdown if exists
+    task = COUNTDOWN_TASKS.get(pay_id)
+    if task:
+        task.cancel()
+        COUNTDOWN_TASKS.pop(pay_id, None)
+
+    # Find payment record
     for p in DB["payments"]:
         if p["payment_id"] == pay_id:
 
             user_id = p["user_id"]
             package = p["package"]
-            
-            # Detect amount: INR for UPI/Remitly, USD for Crypto
+
+            # Detect amount
             if p["method"] == "crypto":
                 amount = f"${SETTINGS['prices'][package]['crypto_usd']}"
             else:
                 amount = f"₹{SETTINGS['prices'][package]['upi']}"
 
-            # ---------------- APPROVE ----------------
+            # ------- APPROVE -------
             if action == "approve":
                 p["status"] = "verified"
                 save_db(DB)
 
-                # Remove buttons & update caption/text
+                # Update admin message
                 try:
                     await query.edit_message_caption(
                         caption=f"✅ Approved payment (ID: {pay_id}) for user: {user_id} | amount: {amount}",
@@ -275,22 +316,22 @@ async def admin_review_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                         reply_markup=None
                     )
 
-                # Send link to the user
+                # Send access to user
                 await send_link_to_user(user_id, package)
 
-                # Notify admin separately
+                # Notify admin
                 await context.bot.send_message(
                     SETTINGS["admin_chat_id"],
                     f"✅ Approved payment (ID: {pay_id}) for user: {user_id} | amount: {amount}"
                 )
                 return
 
-            # ---------------- DECLINE ----------------
+            # ------- DECLINE -------
             if action == "decline":
                 p["status"] = "declined"
                 save_db(DB)
 
-                # Remove buttons & update caption/text
+                # Update admin message
                 try:
                     await query.edit_message_caption(
                         caption=f"❌ Declined payment (ID: {pay_id}) for user: {user_id} | amount: {amount}",
@@ -308,12 +349,13 @@ async def admin_review_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     "❌ Payment declined. Please try again."
                 )
 
-                # Notify admin separately
+                # Notify admin
                 await context.bot.send_message(
                     SETTINGS["admin_chat_id"],
                     f"❌ Declined payment (ID: {pay_id}) for user: {user_id} | amount: {amount}"
                 )
                 return
+
 
 
 async def send_link_to_user(user_id: int, package: str):
@@ -369,6 +411,57 @@ def razorpay_webhook():
     return jsonify({"status": "ok"}), 200
 
 # -------------------- Startup --------------------
+async def start_countdown(payment_id: str, chat_id: int, message_id: int, seconds: int):
+    global COUNTDOWN_TASKS
+
+    for p in DB["payments"]:
+        if p["payment_id"] == payment_id:
+            break
+    else:
+        return
+    
+    while seconds > 0:
+        # Stop countdown if payment is no longer pending
+        if p["status"] != "pending":
+            return
+
+        minutes = seconds // 60
+        sec = seconds % 60
+        timer_text = f"{minutes:02d}:{sec:02d}"
+
+        try:
+            await app_instance.bot.edit_message_caption(
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=p.get("caption_text", "") + f"\n\n⏳ **Time Left:** {timer_text}",
+                parse_mode="Markdown"
+            )
+        except:
+            pass
+        
+        await asyncio.sleep(1)
+        seconds -= 1
+
+    # TIME EXPIRED → FORCE EXPIRE
+    if p["status"] == "pending":
+        p["status"] = "expired"
+        save_db(DB)
+
+        # Delete message
+        try:
+            await app_instance.bot.delete_message(chat_id, message_id)
+        except:
+            pass
+
+        # Notify user
+        try:
+            await app_instance.bot.send_message(
+                chat_id=p["user_id"],
+                text="⌛ **Payment session expired. Please try again.**"
+            )
+        except:
+            pass
+
 async def post_init(application):
     global BOT_LOOP
     BOT_LOOP = asyncio.get_running_loop()
