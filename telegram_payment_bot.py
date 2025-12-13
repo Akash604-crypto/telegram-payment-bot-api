@@ -910,7 +910,19 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await reply_func(text, parse_mode="Markdown")
 
+async def setremitlyhowto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
+        return
 
+    if not context.args:
+        return await update.message.reply_text(
+            "Usage:\n/setremitlyhowto <link>"
+        )
+
+    SETTINGS["payment_info"]["remitly_how_to"] = context.args[0]
+    save_settings(SETTINGS)
+
+    await update.message.reply_text("✅ Remitly how-to-pay link updated successfully.")
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
@@ -923,7 +935,8 @@ if __name__ == "__main__":
     # ADMIN COMMANDS
     application.add_handler(CommandHandler('setlink', setlink))
     application.add_handler(CommandHandler('setprice', setprice))
-    application.add_handler(CommandHandler('adminpanel', adminpanel))   # <-- ADDED
+    application.add_handler(CommandHandler('adminpanel', adminpanel)) # <-- ADDED
+    application.add_handler(CommandHandler('setremitlyhowto', setremitlyhowto))
 
     # CALLBACK BUTTON HANDLERS
     application.add_handler(CallbackQueryHandler(callback_handler, pattern="^(choose_.*|pay_.*|cancel|help|status_btn)$"))
