@@ -157,21 +157,39 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "created_at": int(time.time()),
         }
 
-        if method == "upi":
-            amount = SETTINGS["prices"][package]["upi"]
-            qr_resp = create_razorpay_smart_qr(amount, user.id, package)
-            if not qr_resp:
-                return await query.message.reply_text("❌ System Busy. Try again later.")
-            
-            entry["razorpay_qr_id"] = qr_resp['id']
-            DB["payments"].append(entry)
-            save_db(DB)
+if method == "upi":
+    amount = SETTINGS["prices"][package]["upi"]
 
-            await query.message.reply_photo(
-                photo=qr_resp['image_url'],
-                caption=f"✅ SCAN & PAY ₹{amount}\n\nNo need to send screenshots. Link will be sent instantly after payment!"
-            )
-            return
+    # Step 1 → Inform user
+    msg1 = await query.message.reply_text("⏳ Creating QR code...")
+
+    # Step 2 → Create QR
+    qr_resp = create_razorpay_smart_qr(amount, user.id, package)
+    if not qr_resp:
+        await msg1.edit_text("❌ System Busy. Try again later.")
+        return
+    
+    # Step 3 → Update DB
+    entry["razorpay_qr_id"] = qr_resp['id']
+    DB["payments"].append(entry)
+    save_db(DB)
+
+    # Step 4 → Inform before sending
+    await msg1.edit_text("📤 Sending QR code...")
+
+    # Step 5 → Send actual QR
+    await query.message.reply_photo(
+        photo=qr_resp['image_url'],
+        caption=(
+            f"✅ **SCAN & PAY ₹{amount}**\n\n"
+            f"• Auto-detect payment\n"
+            f"• No need to send screenshot\n"
+            f"• Access link will arrive instantly after payment"
+        )
+    )
+
+    return
+
 
         # Crypto/Remitly Flow (Manual)
         DB["payments"].append(entry)
