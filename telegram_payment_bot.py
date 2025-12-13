@@ -268,6 +268,48 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return await msg.reply_text("📸 Proof sent to Admin for verification.")
 
 # -------------------- Admin Command Functions (Preserved) --------------------
+async def adminpanel_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
+        await query.answer("Not allowed.", show_alert=True)
+        return
+
+    # ——————————— BUTTON ACTIONS ———————————
+
+    if data.startswith("admin_setlink_"):
+        pkg = data.replace("admin_setlink_", "")
+        await query.message.reply_text(f"Send new link for: {pkg.upper()}\n\nFormat:\n`/setlink {pkg} <link>`",
+                                       parse_mode="Markdown")
+        await query.answer()
+        return
+
+    if data == "admin_pending":
+        pendings = [p for p in DB["payments"] if p["status"] == "pending"]
+        if not pendings:
+            await query.answer("No pending payments.", show_alert=True)
+            return
+
+        msg = "🟡 *Pending Payments:*\n\n"
+        for p in pendings:
+            msg += (
+                f"ID: `{p['payment_id']}`\n"
+                f"User: `{p['user_id']}`\n"
+                f"Package: *{p['package']}*\n"
+                f"Method: `{p['method']}`\n"
+                f"———————\n"
+            )
+
+        await query.message.reply_text(msg, parse_mode="Markdown")
+        await query.answer()
+        return
+
+    if data == "admin_close":
+        await query.message.delete()
+        await query.answer()
+        return
+
 async def setlink(update, context):
     if update.effective_chat.id != SETTINGS["admin_chat_id"]: return
     if len(context.args) < 2: return await update.message.reply_text("/setlink <pkg> <link>")
@@ -511,17 +553,127 @@ async def post_init(application):
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+async def adminpanel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
+        return  # Block non-admins
+
+    text = (
+        "🛠 **ADMIN PANEL**\n"
+        "Manage prices, links, and payments.\n\n"
+        "Available Commands:\n"
+        "——————————————\n"
+        "🔗 `/setlink <package> <link>`\n"
+        "– Set access link for VIP / DARK / BOTH\n\n"
+        "💰 `/setprice <package> <upi/crypto_usd> <value>`\n"
+        "– Change prices instantly\n\n"
+        "📄 `/pending`  (optional, I can add)\n"
+        "– View all pending payments\n\n"
+        "📊 `/stats` (optional)\n"
+        "– Overview of sales\n\n"
+        "⚙️ More features can be added anytime.\n"
+    )
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Set VIP Link", callback_data="admin_setlink_vip"),
+            InlineKeyboardButton("Set DARK Link", callback_data="admin_setlink_dark")
+        ],
+        [
+            InlineKeyboardButton("Set BOTH Link", callback_data="admin_setlink_both"),
+        ],
+        [
+            InlineKeyboardButton("Pending Payments", callback_data="admin_pending"),
+        ],
+        [
+            InlineKeyboardButton("Close", callback_data="admin_close")
+        ]
+    ])
+
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+# -------------------- ADMIN EXTRA COMMANDS --------------------
+
+async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
+        return
+
+    pendings = [p for p in DB["payments"] if p["status"] == "pending"]
+
+    if not pendings:
+        await update.message.reply_text("🟡 No pending payments.")
+        return
+
+    text = "🟡 *Pending Payments:*\n\n"
+    for p in pendings:
+        text += (
+            f"🆔 ID: `{p['payment_id']}`\n"
+            f"👤 User: `{p['user_id']}`\n"
+            f"📦 Package: *{p['package']}*\n"
+            f"💳 Method: `{p['method']}`\n"
+            f"⏱ Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(p['created_at']))}\n"
+            f"———————————————\n"
+        )
+
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
+        return
+
+    total_sales = len([p for p in DB["payments"] if p["status"] == "verified"])
+    total_pending = len([p for p in DB["payments"] if p["status"] == "pending"])
+    total_expired = len([p for p in DB["payments"] if p["status"] == "expired"])
+    total_declined = len([p for p in DB["payments"] if p["status"] == "declined"])
+
+    # INCOME
+    income = 0
+    for p in DB["payments"]:
+        if p["status"] == "verified":
+            if p["package"] == "both":
+                income += SETTINGS["prices"]["both"]["upi"]
+            else:
+                income += SETTINGS["prices"][p["package"]]["upi"]
+
+    text = (
+        "📊 **BOT SALES STATISTICS**\n\n"
+        f"✅ Verified Payments: *{total_sales}*\n"
+        f"🟡 Pending Payments: *{total_pending}*\n"
+        f"⛔ Declined: *{total_declined}*\n"
+        f"⌛ Expired: *{total_expired}*\n\n"
+        f"💰 **Total Income:** ₹{income}\n"
+        "———————————————\n"
+        "Use /pending to view open payments."
+    )
+
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app_instance = application
 
+    # USER COMMANDS
     application.add_handler(CommandHandler('start', start_handler))
+
+    # ADMIN COMMANDS
     application.add_handler(CommandHandler('setlink', setlink))
     application.add_handler(CommandHandler('setprice', setprice))
-    application.add_handler(CallbackQueryHandler(callback_handler, pattern="^(choose_|pay_|cancel)"))
+    application.add_handler(CommandHandler('adminpanel', adminpanel))   # <-- ADDED
+
+    # CALLBACK BUTTON HANDLERS
+    application.add_handler(CallbackQueryHandler(callback_handler, pattern="^(choose_|pay_|cancel|help)"))
     application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
+    application.add_handler(CallbackQueryHandler(adminpanel_buttons, pattern="^admin_"))
+
+    # ADMIN EXTRA COMMANDS
+    application.add_handler(CommandHandler('pending', pending_cmd))
+    application.add_handler(CommandHandler('stats', stats_cmd))
+
+
+
+    # MEDIA HANDLER
     application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, message_handler))
 
     application.run_polling()
