@@ -272,21 +272,42 @@ async def adminpanel_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     data = query.data
 
+    # Only admin access
     if update.effective_chat.id != SETTINGS["admin_chat_id"]:
         await query.answer("Not allowed.", show_alert=True)
         return
 
     # ——————————— BUTTON ACTIONS ———————————
 
-    if data.startswith("admin_setlink_"):
-        pkg = data.replace("admin_setlink_", "")
-        await query.message.reply_text(f"Send new link for: {pkg.upper()}\n\nFormat:\n`/setlink {pkg} <link>`",
-                                       parse_mode="Markdown")
+    # Broadcast Instructions
+    if data == "admin_broadcast":
+        await query.message.reply_text(
+            "📢 **Broadcast Instructions**\n\n"
+            "To send a broadcast message:\n"
+            "• Text → `/broadcast your message`\n"
+            "• Photo → Send a photo with caption `/broadcast`\n"
+            "• Document → Send a document with caption `/broadcast`\n",
+            parse_mode="Markdown"
+        )
         await query.answer()
         return
 
+    # Set Link Buttons
+    if data.startswith("admin_setlink_"):
+        pkg = data.replace("admin_setlink_", "")
+        await query.message.reply_text(
+            f"Send new link for: **{pkg.upper()}**\n\n"
+            "Format:\n"
+            f"`/setlink {pkg} <link>`",
+            parse_mode="Markdown"
+        )
+        await query.answer()
+        return
+
+    # Show Pending Payments
     if data == "admin_pending":
         pendings = [p for p in DB["payments"] if p["status"] == "pending"]
+
         if not pendings:
             await query.answer("No pending payments.", show_alert=True)
             return
@@ -294,21 +315,23 @@ async def adminpanel_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
         msg = "🟡 *Pending Payments:*\n\n"
         for p in pendings:
             msg += (
-                f"ID: `{p['payment_id']}`\n"
-                f"User: `{p['user_id']}`\n"
-                f"Package: *{p['package']}*\n"
-                f"Method: `{p['method']}`\n"
-                f"———————\n"
+                f"🆔 ID: `{p['payment_id']}`\n"
+                f"👤 User: `{p['user_id']}`\n"
+                f"📦 Package: *{p['package']}*\n"
+                f"💳 Method: `{p['method']}`\n"
+                f"———————————————\n"
             )
 
         await query.message.reply_text(msg, parse_mode="Markdown")
         await query.answer()
         return
 
+    # Close Admin Panel
     if data == "admin_close":
         await query.message.delete()
         await query.answer()
         return
+
 
 async def setlink(update, context):
     if update.effective_chat.id != SETTINGS["admin_chat_id"]: return
@@ -521,40 +544,48 @@ def razorpay_webhook():
 async def start_countdown(payment_id: str, chat_id: int, message_id: int, seconds: int):
     global COUNTDOWN_TASKS
 
+    # Find payment entry
     for p in DB["payments"]:
         if p["payment_id"] == payment_id:
             break
     else:
         return
-    
+
     while seconds > 0:
-        # Stop countdown if payment is no longer pending
         if p["status"] != "pending":
             return
 
-        minutes = seconds // 60
-        sec = seconds % 60
-        timer_text = f"{minutes:02d}:{sec:02d}"
+        timer_text = f"{seconds//60:02d}:{seconds%60:02d}"
+        new_text = p["caption_text"] + f"\n\n⏳ **Time Left:** {timer_text}"
 
         try:
-            await app_instance.bot.edit_message_caption(
-                chat_id=chat_id,
-                message_id=message_id,
-                caption=p.get("caption_text", "") + f"\n\n⏳ **Time Left:** {timer_text}",
-                parse_mode="Markdown"
-            )
+            if p["method"] == "upi":
+                # UPI → edit caption of QR photo
+                await app_instance.bot.edit_message_caption(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    caption=new_text,
+                    parse_mode="Markdown"
+                )
+            else:
+                # Crypto & Remitly → edit text message
+                await app_instance.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=new_text
+                )
         except:
             pass
-        
+
         await asyncio.sleep(1)
         seconds -= 1
 
-    # TIME EXPIRED → FORCE EXPIRE
+    # TIMEOUT HANDLING
     if p["status"] == "pending":
         p["status"] = "expired"
         save_db(DB)
 
-        # Delete message
+        # Delete payment message
         try:
             await app_instance.bot.delete_message(chat_id, message_id)
         except:
@@ -568,6 +599,8 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
             )
         except:
             pass
+
+
 
 async def post_init(application):
     global BOT_LOOP
@@ -754,14 +787,17 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.Document.ALL & filters.CaptionRegex("^/broadcast"), broadcast_cmd))
 
 
-
     # ADMIN EXTRA COMMANDS
     application.add_handler(CommandHandler('pending', pending_cmd))
     application.add_handler(CommandHandler('stats', stats_cmd))
 
-
-
     # MEDIA HANDLER
-    application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, message_handler))
+    application.add_handler(
+        MessageHandler(
+            (filters.PHOTO | filters.Document.ALL) & ~filters.CaptionRegex("^/broadcast"),
+            message_handler
+        )
+    )
 
     application.run_polling()
+
