@@ -5,6 +5,8 @@ MANUAL: Crypto & Remitly still require Admin Approval.
 """
 
 import os
+from PIL import Image, ImageDraw, ImageFont, ImageChops
+import io
 import base64
 import json
 import time
@@ -103,6 +105,107 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
         print(f"QR Error: {e}")
         return None
 
+def crop_qr_from_razorpay(qr_bytes):
+    """Automatically extract only the QR code from Razorpay QR images."""
+
+    try:
+        img = Image.open(io.BytesIO(qr_bytes)).convert("RGB")
+        w, h = img.size
+
+        # Convert to grayscale
+        gray = img.convert("L")
+
+        # Auto-detect the QR region by scanning darkest pixels
+        threshold = 180
+        mask = gray.point(lambda p: p < threshold and 255)
+
+        # Convert mask to image
+        mask = mask.convert("1")
+
+        # Find bounding box of QR code
+        bbox = mask.getbbox()
+
+        if not bbox:
+            print("QR Crop Failed: No bbox detected")
+            return img  # fallback: return original
+
+        # Expand crop box slightly (remove Razorpay text & logo)
+        left, top, right, bottom = bbox
+
+        pad = 20
+        left = max(0, left - pad)
+        top = max(0, top - pad)
+        right = min(w, right + pad)
+        bottom = min(h, bottom + pad)
+
+        cropped = img.crop((left, top, right, bottom))
+
+        # Remove extra white border around QR
+        bg = Image.new(cropped.mode, cropped.size, (255, 255, 255))
+        diff = ImageChops.difference(cropped, bg)
+        bbox2 = diff.getbbox()
+
+        if bbox2:
+            cropped = cropped.crop(bbox2)
+
+        return cropped
+
+    except Exception as e:
+        print("Crop QR Error:", e)
+        return None
+
+def generate_branded_qr(qr_bytes):
+    """Creates a branded Technova QR template with the cropped QR in center."""
+    try:
+        qr_img = crop_qr_from_razorpay(qr_bytes)
+        if qr_img is None:
+           qr_img = Image.open(io.BytesIO(qr_bytes)).convert("RGB")
+
+        # Template size
+        width = 900
+        height = qr_img.height + 350
+        template = Image.new("RGB", (width, height), "#FFFFFF")
+        draw = ImageDraw.Draw(template)
+
+        # Colors
+        brand_color = "#1D4ED8"  # Technova Blue
+        text_color = "#000000"
+
+        # Header Background
+        draw.rectangle([0, 0, width, 150], fill=brand_color)
+
+        # Load default fonts
+        try:
+            font_title = ImageFont.truetype("arial.ttf", 60)
+            font_sub = ImageFont.truetype("arial.ttf", 36)
+        except:
+            font_title = ImageFont.load_default()
+            font_sub = ImageFont.load_default()
+
+        # Header Text
+        draw.text((width/2, 40), "TECHNOVA STORE", fill="white", font=font_title, anchor="mm")
+        draw.text((width/2, 110), "Secure UPI Payment", fill="white", font=font_sub, anchor="mm")
+
+        # Place QR
+        qr_x = (width - qr_img.width) // 2
+        qr_y = 160
+        template.paste(qr_img, (qr_x, qr_y))
+
+        # Footer Section
+        footer_y = qr_y + qr_img.height + 40
+        draw.text((width/2, footer_y), "GPay • PhonePe • Paytm UPI", fill=text_color, font=font_sub, anchor="mm")
+        draw.text((width/2, footer_y + 60), "Auto-payment verification enabled", fill="#4B5563", font=font_sub, anchor="mm")
+
+        # Save output
+        output = io.BytesIO()
+        template.save(output, format="PNG")
+        output.seek(0)
+        return output
+
+    except Exception as e:
+        print("Branded QR Error:", e)
+        return None
+
 # -------------------- Bot Handlers --------------------
 app = Flask(__name__)
 TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN")
@@ -125,16 +228,16 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await query.answer(cache_time=1)
     data = query.data
     user = query.from_user
 
-    # ----- HELP -----
+    # HELP
     if data == "help":
         await query.message.reply_text("Contact help: @Dark123222_bot")
         return
 
-    # ----- PACKAGE SELECTION -----
+    # PACKAGE SELECTION
     if data.startswith("choose_"):
         package = data.split("_")[1]
         kb = [
@@ -152,12 +255,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ----- CANCEL -----
+    # CANCEL
     if data == "cancel":
         await query.message.reply_text("Menu closed. Use /start to reopen.")
         return
 
-    # ----- PAYMENT METHOD SELECTED -----
+    # PAYMENT METHOD SELECTED (FIXED INDENTATION)
     if data.startswith("pay_"):
         method, package = data.split(":")
         method = method.replace("pay_", "")
@@ -172,15 +275,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "created_at": int(time.time()),
         }
 
-        # ---------- UPI (WITH 10 MIN COUNTDOWN) ----------
+        # -------------------- UPI QR BLOCK --------------------
         if method == "upi":
             amount = SETTINGS["prices"][package]["upi"]
 
+            # Step 1: Loading message
             msg1 = await query.message.reply_text("⏳ Creating QR code...")
-
-            # store creating msg id
             entry["loading_msg_ids"] = [msg1.message_id]
 
+            # Step 2: Create Razorpay QR
             qr_resp = create_razorpay_smart_qr(amount, user.id, package)
             if not qr_resp:
                 await msg1.edit_text("❌ System Busy. Try again later.")
@@ -190,10 +293,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             DB["payments"].append(entry)
             save_db(DB)
 
-            # update sending message
-            await msg1.edit_text("📤 Sending QR code...")
-            entry["loading_msg_ids"].append(msg1.message_id)
+            # Step 3: Update loading msg
+            await msg1.edit_text("📤 Preparing QR...")
             save_db(DB)
+
+            # Step 4: Download QR
+            r = requests.get(qr_resp["image_url"], timeout=10)
+            qr_bytes = r.content
+
+            # Step 5: Branded QR
+            branded_qr = generate_branded_qr(qr_bytes)
+            if branded_qr:
+                branded_qr.seek(0)
 
             caption_text = (
                 f"✅ **SCAN & PAY ₹{amount}**\n"
@@ -201,8 +312,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"• Do NOT send screenshot\n"
             )
 
+            # Step 6: Send QR
             qr_msg = await query.message.reply_photo(
-                photo=qr_resp["image_url"],
+                photo=branded_qr,
                 caption=caption_text,
                 parse_mode="Markdown"
             )
@@ -212,36 +324,33 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             entry["message_id"] = qr_msg.message_id
             save_db(DB)
 
-            # Start countdown
+            # Step 7: Countdown (10 min)
             COUNTDOWN_TASKS[entry["payment_id"]] = asyncio.create_task(
                 start_countdown(entry["payment_id"], qr_msg.chat.id, qr_msg.message_id, 600)
             )
 
             return
 
-
-        # ---------- MANUAL PAYMENTS (CRYPTO / REMITLY — 30 MIN COUNTDOWN) ----------
+        # -------------------- MANUAL PAYMENTS (Crypto / Remitly) --------------------
         DB["payments"].append(entry)
         save_db(DB)
 
         caption_text = build_manual_payment_text(package, method)
-
-        msg2 = await query.message.reply_text(
-            caption_text,
-            parse_mode="Markdown"
-        )
+        msg2 = await query.message.reply_text(caption_text, parse_mode="Markdown")
 
         entry["caption_text"] = caption_text
         entry["chat_id"] = msg2.chat.id
         entry["message_id"] = msg2.message_id
         save_db(DB)
 
-        # Start 30-min countdown
+        # 30-min countdown
         COUNTDOWN_TASKS[entry["payment_id"]] = asyncio.create_task(
             start_countdown(entry["payment_id"], msg2.chat.id, msg2.message_id, 1800)
         )
 
         return
+
+
 
 
 
@@ -272,6 +381,9 @@ async def adminpanel_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     data = query.data
 
+    # Always answer once at the start
+    await query.answer(cache_time=1)
+
     # Only admin access
     if update.effective_chat.id != SETTINGS["admin_chat_id"]:
         await query.answer("Not allowed.", show_alert=True)
@@ -279,7 +391,6 @@ async def adminpanel_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # ——————————— BUTTON ACTIONS ———————————
 
-    # Broadcast Instructions
     if data == "admin_broadcast":
         await query.message.reply_text(
             "📢 **Broadcast Instructions**\n\n"
@@ -289,10 +400,8 @@ async def adminpanel_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "• Document → Send a document with caption `/broadcast`\n",
             parse_mode="Markdown"
         )
-        await query.answer()
         return
 
-    # Set Link Buttons
     if data.startswith("admin_setlink_"):
         pkg = data.replace("admin_setlink_", "")
         await query.message.reply_text(
@@ -301,10 +410,8 @@ async def adminpanel_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"`/setlink {pkg} <link>`",
             parse_mode="Markdown"
         )
-        await query.answer()
         return
 
-    # Show Pending Payments
     if data == "admin_pending":
         pendings = [p for p in DB["payments"] if p["status"] == "pending"]
 
@@ -323,14 +430,12 @@ async def adminpanel_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
 
         await query.message.reply_text(msg, parse_mode="Markdown")
-        await query.answer()
         return
 
-    # Close Admin Panel
     if data == "admin_close":
         await query.message.delete()
-        await query.answer()
         return
+
 
 
 async def setlink(update, context):
@@ -572,7 +677,8 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
                 await app_instance.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
-                    text=new_text
+                    text=new_text,
+                    parse_mode="Markdown"
                 )
         except:
             pass
@@ -767,8 +873,17 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+
+    application = (
+        ApplicationBuilder()
+        .token(TELEGRAM_TOKEN)
+        .post_init(post_init)
+        .allowed_updates(["message", "callback_query"])
+        .build()
+    )
+
     app_instance = application
+
 
     # USER COMMANDS
     application.add_handler(CommandHandler('start', start_handler))
@@ -779,9 +894,20 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler('adminpanel', adminpanel))   # <-- ADDED
 
     # CALLBACK BUTTON HANDLERS
-    application.add_handler(CallbackQueryHandler(callback_handler, pattern="^(choose_|pay_|cancel|help)"))
-    application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
-    application.add_handler(CallbackQueryHandler(adminpanel_buttons, pattern="^admin_"))
+    
+    application.add_handler(
+    CallbackQueryHandler(callback_handler, pattern="^(choose_.*|pay_.*|cancel|help)$")
+)
+
+
+
+    application.add_handler(
+    CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):")
+)
+    application.add_handler(
+    CallbackQueryHandler(adminpanel_buttons, pattern="^admin_")
+)
+
     application.add_handler(CommandHandler('broadcast', broadcast_cmd))
     application.add_handler(MessageHandler(filters.PHOTO & filters.CaptionRegex("^/broadcast"), broadcast_cmd))
     application.add_handler(MessageHandler(filters.Document.ALL & filters.CaptionRegex("^/broadcast"), broadcast_cmd))
@@ -800,4 +926,3 @@ if __name__ == "__main__":
     )
 
     application.run_polling()
-
