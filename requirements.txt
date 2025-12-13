@@ -1,4 +1,7 @@
-python-telegram-bot==20.7
-Flask==3.0.0
+python-telegram-bot
+flask
 requests
-Pillow
+qrcode[pil]
+python-telegram-bot==20.5
+Flask==2.2.5
+requests==2.31.0
