@@ -569,6 +569,7 @@ def build_manual_payment_text(package, method):
     return (
         f"🌍 **Remitly Payment Instructions**\n\n"
         f"Amount to Send: **₹{amount_inr} INR**\n\n"
+        f"📘 How to Pay Guide:\n{pi['remitly_how_to']}\n\n"
         f"1️⃣ Create an account on *Remitly* (App / Website)\n"
         f"2️⃣ Select destination: **India** and enter amount\n"
         f"3️⃣ Choose Delivery Method: **Bank**\n"
