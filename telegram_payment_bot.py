@@ -614,6 +614,63 @@ async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     await update.message.reply_text(text, parse_mode="Markdown")
+async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
+        return
+
+    delivered = 0
+    failed = 0
+
+    users = set()
+    for p in DB["payments"]:
+        if p["status"] == "verified":
+            users.add(p["user_id"])
+
+    # CASE 1: PHOTO OR DOCUMENT BROADCAST
+    if update.message.photo or update.message.document:
+        caption = update.message.caption or ""
+        file_obj = update.message.photo[-1] if update.message.photo else update.message.document
+        file = await file_obj.get_file()
+
+        for uid in users:
+            try:
+                await app_instance.bot.send_message(uid, "📢 *New Broadcast Message:*", parse_mode="Markdown")
+
+                if update.message.photo:
+                    await app_instance.bot.send_photo(uid, file.file_id, caption=caption)
+                else:
+                    await app_instance.bot.send_document(uid, file.file_id, caption=caption)
+
+                delivered += 1
+                await asyncio.sleep(0.05)
+            except:
+                failed += 1
+
+        return await update.message.reply_text(
+            f"📢 **Broadcast Completed**\nDelivered: {delivered}\nFailed: {failed}"
+        )
+
+    # CASE 2: TEXT BROADCAST
+    if context.args:
+        text_to_send = " ".join(context.args)
+
+        for uid in users:
+            try:
+                await app_instance.bot.send_message(uid, text_to_send, parse_mode="Markdown")
+                delivered += 1
+                await asyncio.sleep(0.05)
+            except:
+                failed += 1
+
+        return await update.message.reply_text(
+            f"📢 **Broadcast Completed**\nDelivered: {delivered}\nFailed: {failed}"
+        )
+
+    # NO CONTENT PROVIDED
+    return await update.message.reply_text("Usage:\n\n"
+                                          "📌 Text → `/broadcast your message`\n"
+                                          "📌 Photo → Send photo with caption `/broadcast`\n"
+                                          "📌 Document → Send document with caption `/broadcast`")
 
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -666,6 +723,11 @@ if __name__ == "__main__":
     application.add_handler(CallbackQueryHandler(callback_handler, pattern="^(choose_|pay_|cancel|help)"))
     application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
     application.add_handler(CallbackQueryHandler(adminpanel_buttons, pattern="^admin_"))
+    application.add_handler(CommandHandler('broadcast', broadcast_cmd))
+    application.add_handler(MessageHandler(filters.PHOTO & filters.CaptionRegex("^/broadcast"), broadcast_cmd))
+    application.add_handler(MessageHandler(filters.Document.ALL & filters.CaptionRegex("^/broadcast"), broadcast_cmd))
+
+
 
     # ADMIN EXTRA COMMANDS
     application.add_handler(CommandHandler('pending', pending_cmd))
