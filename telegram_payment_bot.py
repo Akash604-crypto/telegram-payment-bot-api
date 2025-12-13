@@ -52,7 +52,11 @@ DEFAULT_SETTINGS = {
         "upi_id": os.environ.get("UPI_ID", "govindmahto21@axl"),
         "crypto_address": os.environ.get("CRYPTO_ADDRESS", "0xfc14846229f375124d8fed5cd9a789a271a303f5"),
         "crypto_network": os.environ.get("CRYPTO_NETWORK", "BEP20"),
-        "remitly_info": os.environ.get("REMITLY_INFO", "Recipient: Govind Mahto. UPI: govindmahto21@axl"),
+        "remitly_info": os.environ.get(
+            "REMITLY_INFO",
+            "Recipient: Govind Mahto | Bank Transfer | A/C: 002020391365887 | IFSC: JIOP0000001 | Reason: Family Support"
+        ),
+
         "remitly_how_to": os.environ.get("REMITLY_HOW_TO_PAY_LINK", "https://t.me/+8jECICY--sU2MjIx"),
     }
 }
@@ -560,18 +564,22 @@ def build_manual_payment_text(package, method):
             f"⏳ Your payment session is active. Complete it before the timer ends."
         )
 
-    # REMITLY
+    # ✅ UPDATED REMITLY INSTRUCTIONS
     amount_inr = SETTINGS['prices'][package]['remitly']
     return (
         f"🌍 **Remitly Payment Instructions**\n\n"
         f"Amount to Send: **₹{amount_inr} INR**\n\n"
-        f"1️⃣ Select *India* as destination.\n"
-        f"2️⃣ Recipient Name: **Govind Mahto**\n"
-        f"3️⃣ UPI ID: **{pi['upi_id']}**\n"
-        f"4️⃣ Reason: *Family Support*\n\n"
-        f"📸 After sending, upload a *payment screenshot* here.\n"
+        f"1️⃣ Create an account on *Remitly* (App / Website)\n"
+        f"2️⃣ Select destination: **India** and enter amount\n"
+        f"3️⃣ Choose Delivery Method: **Bank**\n"
+        f"4️⃣ Recipient Name: **Govind Mahto**\n"
+        f"5️⃣ Bank Account No: **002020391365887**\n"
+        f"   IFSC Code: **JIOP0000001**\n"
+        f"6️⃣ Reason for Payment: **Family Support**\n\n"
+        f"📸 After sending payment, upload a *payment screenshot* here.\n"
         f"⏳ Your payment session is active. Complete it before the timer ends."
     )
+
 
 
 # -------------------- Webhook (Auto-Approve UPI) --------------------
