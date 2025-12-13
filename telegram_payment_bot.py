@@ -405,9 +405,34 @@ def razorpay_webhook():
             if p.get("razorpay_qr_id") == qr_id and p["status"] == "pending":
                 p["status"] = "verified"
                 save_db(DB)
+
+                # STOP countdown if running
+                task = COUNTDOWN_TASKS.get(p["payment_id"])
+                if task:
+                    task.cancel()
+                    COUNTDOWN_TASKS.pop(p["payment_id"], None)
+
+                # SEND ACCESS LINK
                 if BOT_LOOP:
-                    asyncio.run_coroutine_threadsafe(send_link_to_user(user_id, package), BOT_LOOP)
+                    asyncio.run_coroutine_threadsafe(
+                        send_link_to_user(user_id, package),
+                        BOT_LOOP
+                    )
+
+                # DELETE QR MESSAGE
+                try:
+                    chat_id = p.get("chat_id")
+                    msg_id = p.get("message_id")
+                    if chat_id and msg_id:
+                        asyncio.run_coroutine_threadsafe(
+                            app_instance.bot.delete_message(chat_id, msg_id),
+                            BOT_LOOP
+                        )
+                except Exception as e:
+                    print("QR delete error:", e)
+
                 break
+
     return jsonify({"status": "ok"}), 200
 
 # -------------------- Startup --------------------
