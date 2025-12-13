@@ -436,9 +436,31 @@ async def send_link_to_user(user_id: int, package: str):
 
 def build_manual_payment_text(package, method):
     pi = SETTINGS['payment_info']
-    if method == 'crypto':
-        return f"Send ${SETTINGS['prices'][package]['crypto_usd']} ({pi['crypto_network']}) to:\n`{pi['crypto_address']}`\nReply with screenshot."
-    return f"{pi['remitly_info']}\nReply with screenshot."
+
+    if method == "crypto":
+        usd = SETTINGS['prices'][package]['crypto_usd']
+        return (
+            f"💱 **Crypto Payment Instructions**\n\n"
+            f"Amount: **${usd} USDT**\n"
+            f"Network: **{pi['crypto_network']}**\n\n"
+            f"🔐 **Wallet Address:**\n`{pi['crypto_address']}`\n\n"
+            f"📸 After payment, send a *payment screenshot* here.\n"
+            f"⏳ Your payment session is active. Complete it before the timer ends."
+        )
+
+    # REMITLY
+    amount_inr = SETTINGS['prices'][package]['remitly']
+    return (
+        f"🌍 **Remitly Payment Instructions**\n\n"
+        f"Amount to Send: **₹{amount_inr} INR**\n\n"
+        f"1️⃣ Select *India* as destination.\n"
+        f"2️⃣ Recipient Name: **Govind Mahto**\n"
+        f"3️⃣ UPI ID: **{pi['upi_id']}**\n"
+        f"4️⃣ Reason: *Family Support*\n\n"
+        f"📸 After sending, upload a *payment screenshot* here.\n"
+        f"⏳ Your payment session is active. Complete it before the timer ends."
+    )
+
 
 # -------------------- Webhook (Auto-Approve UPI) --------------------
 @app.route('/razorpay_webhook', methods=['POST'])
