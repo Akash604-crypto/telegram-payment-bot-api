@@ -178,6 +178,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             msg1 = await query.message.reply_text("⏳ Creating QR code...")
 
+            # store creating msg id
+            entry["loading_msg_ids"] = [msg1.message_id]
+
             qr_resp = create_razorpay_smart_qr(amount, user.id, package)
             if not qr_resp:
                 await msg1.edit_text("❌ System Busy. Try again later.")
@@ -187,7 +190,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             DB["payments"].append(entry)
             save_db(DB)
 
+            # update sending message
             await msg1.edit_text("📤 Sending QR code...")
+            entry["loading_msg_ids"].append(msg1.message_id)
+            save_db(DB)
 
             caption_text = (
                 f"✅ **SCAN & PAY ₹{amount}**\n"
@@ -206,12 +212,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             entry["message_id"] = qr_msg.message_id
             save_db(DB)
 
-            # Start 10-minute countdown
+            # Start countdown
             COUNTDOWN_TASKS[entry["payment_id"]] = asyncio.create_task(
                 start_countdown(entry["payment_id"], qr_msg.chat.id, qr_msg.message_id, 600)
             )
 
             return
+
 
         # ---------- MANUAL PAYMENTS (CRYPTO / REMITLY — 30 MIN COUNTDOWN) ----------
         DB["payments"].append(entry)
@@ -419,7 +426,7 @@ def razorpay_webhook():
                         BOT_LOOP
                     )
 
-                # DELETE QR MESSAGE
+                # DELETE QR MESSAGE (main QR)
                 try:
                     chat_id = p.get("chat_id")
                     msg_id = p.get("message_id")
@@ -430,6 +437,17 @@ def razorpay_webhook():
                         )
                 except Exception as e:
                     print("QR delete error:", e)
+
+                # DELETE loading messages ("Creating QR...", "Sending QR...")
+                try:
+                    if p.get("loading_msg_ids"):
+                        for mid in p["loading_msg_ids"]:
+                            asyncio.run_coroutine_threadsafe(
+                                app_instance.bot.delete_message(p["user_id"], mid),
+                                BOT_LOOP
+                            )
+                except Exception as e:
+                    print("Loading delete error:", e)
 
                 break
 
