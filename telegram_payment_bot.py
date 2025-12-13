@@ -114,6 +114,13 @@ def main_keyboard():
         [InlineKeyboardButton("HELP", callback_data="help")],
     ]
     return InlineKeyboardMarkup(kb)
+    
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Choose a package to continue:",
+        reply_markup=main_keyboard()
+    )
+
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -133,18 +140,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(f"Remitly - ₹{SETTINGS['prices'][package]['remitly']}", callback_data=f"pay_remitly:{package}")],
             [InlineKeyboardButton("Cancel", callback_data="cancel")],
         ]
-        await query.message.reply_text(f"Select Payment Method for {package.upper()}:", reply_markup=InlineKeyboardMarkup(kb))
+        await query.message.reply_text(
+            f"Select Payment Method for {package.upper()}:",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
         return
 
     if data == "cancel":
         await query.message.reply_text("Menu closed. Use /start to reopen.")
         return
 
-    # >>> THIS BLOCK WAS MISALIGNED <<<
-    if data.startswith("pay_"): # <<< CORRECT INDENTATION HERE
+    # ---------------- PAYMENT METHOD SELECTION ----------------
+    if data.startswith("pay_"):
         method, package = data.split(":")
         method = method.replace("pay_", "")
-        
+
         entry = {
             "payment_id": f"p_{int(time.time()*1000)}",
             "user_id": user.id,
@@ -155,7 +165,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "created_at": int(time.time()),
         }
 
-        # ---------------- UPI METHOD ----------------
+        # ---------------- UPI AUTO QR ----------------
         if method == "upi":
             amount = SETTINGS["prices"][package]["upi"]
 
@@ -168,8 +178,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg1.edit_text("❌ System Busy. Try again later.")
                 return
 
-            # Step 3 → Save payment entry
-            entry["razorpay_qr_id"] = qr_resp['id']
+            # Step 3 → Save entry
+            entry["razorpay_qr_id"] = qr_resp["id"]
             DB["payments"].append(entry)
             save_db(DB)
 
@@ -178,19 +188,20 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # Step 5 → Send QR
             await query.message.reply_photo(
-                photo=qr_resp['image_url'],
+                photo=qr_resp["image_url"],
                 caption=(
                     f"✅ **SCAN & PAY ₹{amount}**\n\n"
                     f"• Auto-detect payment\n"
                     f"• No need to send screenshot\n"
-                    f"• Access link will arrive instantly after payment"
+                    f"• Access link will be delivered instantly after payment"
                 )
             )
             return
 
-        # ---------------- CRYPTO / REMITLY (MANUAL) ----------------
+        # ---------------- MANUAL PAYMENT METHODS (CRYPTO/REMITLY) ----------------
         DB["payments"].append(entry)
         save_db(DB)
+
         text = build_manual_payment_text(package, method)
         await query.message.reply_text(text)
 
