@@ -245,19 +245,76 @@ async def setprice(update, context):
 async def admin_review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     action, pay_id = query.data.split(":")
+
     for p in DB["payments"]:
         if p["payment_id"] == pay_id:
+
+            user_id = p["user_id"]
+            package = p["package"]
+            
+            # Detect amount: INR for UPI/Remitly, USD for Crypto
+            if p["method"] == "crypto":
+                amount = f"${SETTINGS['prices'][package]['crypto_usd']}"
+            else:
+                amount = f"₹{SETTINGS['prices'][package]['upi']}"
+
+            # ---------------- APPROVE ----------------
             if action == "approve":
                 p["status"] = "verified"
                 save_db(DB)
-                await send_link_to_user(p["user_id"], p["package"])
-                await query.edit_message_text("✅ Approved")
-            elif action == "decline":
+
+                # Remove buttons & update caption/text
+                try:
+                    await query.edit_message_caption(
+                        caption=f"✅ Approved payment (ID: {pay_id}) for user: {user_id} | amount: {amount}",
+                        reply_markup=None
+                    )
+                except:
+                    await query.edit_message_text(
+                        f"✅ Approved payment (ID: {pay_id}) for user: {user_id} | amount: {amount}",
+                        reply_markup=None
+                    )
+
+                # Send link to the user
+                await send_link_to_user(user_id, package)
+
+                # Notify admin separately
+                await context.bot.send_message(
+                    SETTINGS["admin_chat_id"],
+                    f"✅ Approved payment (ID: {pay_id}) for user: {user_id} | amount: {amount}"
+                )
+                return
+
+            # ---------------- DECLINE ----------------
+            if action == "decline":
                 p["status"] = "declined"
                 save_db(DB)
-                await context.bot.send_message(p["user_id"], "❌ Payment declined.")
-                await query.edit_message_text("❌ Declined")
-            break
+
+                # Remove buttons & update caption/text
+                try:
+                    await query.edit_message_caption(
+                        caption=f"❌ Declined payment (ID: {pay_id}) for user: {user_id} | amount: {amount}",
+                        reply_markup=None
+                    )
+                except:
+                    await query.edit_message_text(
+                        f"❌ Declined payment (ID: {pay_id}) for user: {user_id} | amount: {amount}",
+                        reply_markup=None
+                    )
+
+                # Notify user
+                await context.bot.send_message(
+                    user_id,
+                    "❌ Payment declined. Please try again."
+                )
+
+                # Notify admin separately
+                await context.bot.send_message(
+                    SETTINGS["admin_chat_id"],
+                    f"❌ Declined payment (ID: {pay_id}) for user: {user_id} | amount: {amount}"
+                )
+                return
+
 
 async def send_link_to_user(user_id: int, package: str):
     link = SETTINGS["links"].get(package, "Link not set. Contact admin.")
