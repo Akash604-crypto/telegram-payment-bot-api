@@ -600,29 +600,29 @@ def home():
 
 @app.route('/razorpay_webhook', methods=['POST'])
 def razorpay_webhook():
+
     # -------- Razorpay Signature Verification ----------
     raw_body = request.data
 
-received_signature = request.headers.get(
-    "X-Razorpay-Webhook-Signature",
-    request.headers.get("X-Razorpay-Signature", "")
-).strip()
+    received_signature = request.headers.get(
+        "X-Razorpay-Webhook-Signature",
+        request.headers.get("X-Razorpay-Signature", "")
+    ).strip()
 
-computed_signature = base64.b64encode(
-    hmac.new(
-        RAZORPAY_WEBHOOK_SECRET.encode("utf-8"),
-        raw_body,
-        hashlib.sha256
-    ).digest()
-).decode().strip()
+    computed_signature = base64.b64encode(
+        hmac.new(
+            RAZORPAY_WEBHOOK_SECRET.encode("utf-8"),
+            raw_body,
+            hashlib.sha256
+        ).digest()
+    ).decode().strip()
 
-print("Computed Signature =", computed_signature)
-print("Received Signature =", received_signature)
+    print("Computed Signature =", computed_signature)
+    print("Received Signature =", received_signature)
 
-if computed_signature != received_signature:
-    print("❌ Signature mismatch")
-    return jsonify({"status": "invalid signature"}), 400
-
+    if computed_signature != received_signature:
+        print("❌ Signature mismatch")
+        return jsonify({"status": "invalid signature"}), 400
     # -----------------------------------------------------
 
     event = request.json or {}
