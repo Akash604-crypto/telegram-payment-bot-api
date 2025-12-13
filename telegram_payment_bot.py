@@ -110,11 +110,11 @@ TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN")
 
 def main_keyboard():
     kb = [
-        [InlineKeyboardButton("VIP", callback_data="choose_vip")],
-        [InlineKeyboardButton("DARK", callback_data="choose_dark")],
-        [InlineKeyboardButton("BOTH (30% off)", callback_data="choose_both")],
-        [InlineKeyboardButton("Check Payment Status", callback_data="status_btn")],
-        [InlineKeyboardButton("HELP", callback_data="help")],
+        [InlineKeyboardButton("🔥 VIP", callback_data="choose_vip")],
+        [InlineKeyboardButton("🌑 DARK", callback_data="choose_dark")],
+        [InlineKeyboardButton("💥 BOTH (30% off)", callback_data="choose_both")],
+        [InlineKeyboardButton("📊 Check Payment Status", callback_data="status_btn")],
+        [InlineKeyboardButton("🆘 HELP", callback_data="help")],
     ]
     return InlineKeyboardMarkup(kb)
 
@@ -148,13 +148,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("choose_"):
         package = data.split("_")[1]
         kb = [
-            [InlineKeyboardButton(f"UPI (Fast/Auto) - ₹{SETTINGS['prices'][package]['upi']}",
+            [InlineKeyboardButton(f"💸 UPI (Fast/Auto) - ₹{SETTINGS['prices'][package]['upi']}",
                                   callback_data=f"pay_upi:{package}")],
-            [InlineKeyboardButton(f"Crypto - ${SETTINGS['prices'][package]['crypto_usd']}",
+            [InlineKeyboardButton(f"🪙 Crypto - ${SETTINGS['prices'][package]['crypto_usd']}",
                                   callback_data=f"pay_crypto:{package}")],
-            [InlineKeyboardButton(f"Remitly - ₹{SETTINGS['prices'][package]['remitly']}",
+            [InlineKeyboardButton(f"🌍 Remitly - ₹{SETTINGS['prices'][package]['remitly']}",
                                   callback_data=f"pay_remitly:{package}")],
-            [InlineKeyboardButton("Cancel", callback_data="cancel")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel")],
         ]
         await query.message.reply_text(
             f"Select Payment Method for {package.upper()}",
