@@ -120,10 +120,19 @@ def main_keyboard():
 
     
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Choose a package to continue:",
-        reply_markup=main_keyboard()
+    user = update.effective_user
+    name = user.first_name or "there"
+
+    text = (
+        f"Welcome {name} 👋\n\n"
+        "Select a package below to proceed with secure access."
     )
+
+    await update.message.reply_text(
+        text,
+        reply_markup=main_keyboard(),
+    )
+
 
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
