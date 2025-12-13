@@ -1,8 +1,9 @@
 """
 Telegram Payment Bot (single-file)
-- UPI: Auto-approve via clean Dynamic QR (No Razorpay Branding).
-- Crypto/Remitly: Manual Admin Approval.
-- Full Admin Suite: Price, Links, Broadcast, Income, Insights.
+UPGRADED: 
+1. UPI uses Smart Dynamic QR (Auto-Approve).
+2. Generates CLEAN QR locally to hide Name/Razorpay branding.
+MANUAL: Crypto & Remitly still require Admin Approval.
 """
 
 import os
@@ -10,12 +11,13 @@ import json
 import time
 import threading
 import asyncio
+from typing import Dict, Any
 from pathlib import Path
 from io import BytesIO
-from datetime import datetime
 
+# NEW IMPORTS FOR CLEAN QR GENERATION
+import qrcode 
 import requests
-import qrcode
 from flask import Flask, request, jsonify
 from telegram import (
     Update,
@@ -31,7 +33,7 @@ from telegram.ext import (
     filters,
 )
 
-# -------------------- Configuration --------------------
+# -------------------- Configuration & storage --------------------
 DATA_DIR = Path(os.environ.get("DATA_DIR", "./data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_FILE = DATA_DIR / "payments.json"
@@ -40,21 +42,25 @@ SETTINGS_FILE = DATA_DIR / "settings.json"
 DEFAULT_SETTINGS = {
     "admin_chat_id": int(os.environ.get("ADMIN_CHAT_ID", "7202040199")),
     "prices": {
-        "vip": {"upi": 499, "crypto_usd": 6, "remitly": 499},
+        "vip": {"upi": 10, "crypto_usd": 6, "remitly": 499}, # Updated default based on screenshot
         "dark": {"upi": 1999, "crypto_usd": 24, "remitly": 1999},
         "both": {"upi": 1749, "crypto_usd": 20, "remitly": 1749},
     },
     "links": {"vip": "", "dark": "", "both": ""},
     "payment_info": {
-        "crypto": "Address: 0x... | Network: BEP20",
-        "remitly": "Recipient: Govind Mahto | UPI: govindmahto21@axl",
+        "upi_id": os.environ.get("UPI_ID", "govindmahto21@axl"),
+        "crypto_address": os.environ.get("CRYPTO_ADDRESS", "0xfc14846229f375124d8fed5cd9a789a271a303f5"),
+        "crypto_network": os.environ.get("CRYPTO_NETWORK", "BEP20"),
+        "remitly_info": os.environ.get("REMITLY_INFO", "Recipient: Govind Mahto. UPI: govindmahto21@axl"),
     }
 }
 
 RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "")
 RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
+RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
 
-# -------------------- Data Helpers --------------------
+BOT_LOOP = None
+
 def load_db():
     if DB_FILE.exists(): return json.loads(DB_FILE.read_text())
     return {"payments": []}
@@ -67,121 +73,235 @@ def load_settings():
     SETTINGS_FILE.write_text(json.dumps(DEFAULT_SETTINGS, indent=2))
     return DEFAULT_SETTINGS
 
+def save_settings(s):
+    SETTINGS_FILE.write_text(json.dumps(s, indent=2))
+
 DB = load_db()
 SETTINGS = load_settings()
-BOT_LOOP = None
 
-# -------------------- QR Logic --------------------
-def generate_clean_qr(upi_url: str):
-    qr = qrcode.QRCode(version=1, box_size=10, border=2)
-    qr.add_data(upi_url)
+# -------------------- Helper: Clean QR Generator --------------------
+def generate_clean_qr(data):
+    """Generates a pure QR code image in memory without any branding."""
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=10,
+        border=2,
+    )
+    qr.add_data(data)
     qr.make(fit=True)
+    
     img = qr.make_image(fill_color="black", back_color="white")
     bio = BytesIO()
     img.save(bio, 'PNG')
     bio.seek(0)
     return bio
 
-def create_rzp_qr(amount, user_id, package):
+# -------------------- Razorpay Smart QR Helper --------------------
+def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
     url = "https://api.razorpay.com/v1/payments/qr_codes"
     payload = {
         "type": "upi_qr",
         "name": f"User_{user_id}",
         "usage": "single_use",
         "fixed_amount": True,
-        "payment_amount": amount * 100,
-        "notes": {"user_id": str(user_id), "package": package}
+        "payment_amount": amount_in_rupees * 100, 
+        "description": f"Auto-pay {package}",
+        "notes": {
+            "user_id": str(user_id),
+            "package": package
+        }
     }
     try:
         r = requests.post(url, auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET), json=payload, timeout=20)
-        data = r.json()
-        return {"id": data['id'], "upi_url": data['payment_data']['upi_qr_url']}
-    except: return None
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"QR Error: {e}")
+        return None
 
 # -------------------- Bot Handlers --------------------
 app = Flask(__name__)
+TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN")
+
+def main_keyboard():
+    kb = [
+        [InlineKeyboardButton("VIP", callback_data="choose_vip")],
+        [InlineKeyboardButton("DARK", callback_data="choose_dark")],
+        [InlineKeyboardButton("BOTH (30% off)", callback_data="choose_both")],
+        [InlineKeyboardButton("HELP", callback_data="help")],
+    ]
+    return InlineKeyboardMarkup(kb)
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = [[InlineKeyboardButton("VIP", callback_data="choose_vip")],
-          [InlineKeyboardButton("DARK", callback_data="choose_dark")],
-          [InlineKeyboardButton("BOTH", callback_data="choose_both")]]
-    await update.message.reply_text("Select a package:", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text("Choose a package to continue:", reply_markup=main_keyboard())
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data, user = query.data, query.from_user
+    data = query.data
+    user = query.from_user
+
+    if data == "help":
+        await query.message.reply_text("Contact help: @Dark123222_bot")
+        return
 
     if data.startswith("choose_"):
-        pkg = data.split("_")[1]
-        kb = [[InlineKeyboardButton(f"UPI (Auto) - ₹{SETTINGS['prices'][pkg]['upi']}", callback_data=f"pay_upi:{pkg}")],
-              [InlineKeyboardButton(f"Crypto - ${SETTINGS['prices'][pkg]['crypto_usd']}", callback_data=f"pay_crypto:{pkg}")],
-              [InlineKeyboardButton(f"Remitly - ₹{SETTINGS['prices'][pkg]['remitly']}", callback_data=f"pay_remitly:{pkg}")]]
-        await query.message.reply_text(f"Payment for {pkg.upper()}:", reply_markup=InlineKeyboardMarkup(kb))
+        package = data.split("_")[1]
+        kb = [
+            [InlineKeyboardButton(f"UPI (Fast/Auto) - ₹{SETTINGS['prices'][package]['upi']}", callback_data=f"pay_upi:{package}")],
+            [InlineKeyboardButton(f"Crypto - ${SETTINGS['prices'][package]['crypto_usd']}", callback_data=f"pay_crypto:{package}")],
+            [InlineKeyboardButton(f"Remitly - ₹{SETTINGS['prices'][package]['remitly']}", callback_data=f"pay_remitly:{package}")],
+            [InlineKeyboardButton("Cancel", callback_data="cancel")],
+        ]
+        await query.message.reply_text(f"Select Payment Method for {package.upper()}:", reply_markup=InlineKeyboardMarkup(kb))
+        return
 
-    elif data.startswith("pay_upi:"):
-        pkg = data.split(":")[1]
-        amount = SETTINGS['prices'][pkg]['upi']
-        qr_data = create_rzp_qr(amount, user.id, pkg)
-        if not qr_data: return await query.message.reply_text("❌ Error. Try again.")
+    if data == "cancel":
+        await query.message.reply_text("Menu closed. Use /start to reopen.")
+        return
+
+    if data.startswith("pay_"):
+        method, package = data.split(":")
+        method = method.replace("pay_", "")
         
-        DB["payments"].append({"user_id": user.id, "package": pkg, "method": "upi", "status": "pending", "rzp_id": qr_data['id'], "amount": amount, "date": str(datetime.now().date())})
-        save_db(DB)
-        await query.message.reply_photo(photo=generate_clean_qr(qr_data['upi_url']), caption=f"✅ Pay ₹{amount}\nAccess sent instantly after payment.")
+        entry = {
+            "payment_id": f"p_{int(time.time()*1000)}",
+            "user_id": user.id,
+            "username": user.username or "",
+            "package": package,
+            "method": method,
+            "status": "pending",
+            "created_at": int(time.time()),
+        }
 
-    elif data.startswith("pay_"):
-        method, pkg = data.split(":")[0].replace("pay_",""), data.split(":")[1]
-        DB["payments"].append({"user_id": user.id, "package": pkg, "method": method, "status": "pending", "date": str(datetime.now().date())})
-        save_db(DB)
-        await query.message.reply_text(f"Manual Payment: {SETTINGS['payment_info'].get(method)}\n\nReply with screenshot proof.")
+        if method == "upi":
+            amount = SETTINGS["prices"][package]["upi"]
+            # 1. Create the entry in Razorpay system
+            qr_resp = create_razorpay_smart_qr(amount, user.id, package)
+            if not qr_resp:
+                return await query.message.reply_text("❌ System Busy. Try again later.")
+            
+            entry["razorpay_qr_id"] = qr_resp['id']
+            DB["payments"].append(entry)
+            save_db(DB)
 
-# -------------------- Admin Suite --------------------
+            # 2. Extract Data to generate CLEAN image
+            # 'qr_string' is the raw UPI intent (best). 'short_url' is the redirect link (good fallback).
+            # 'image_url' is the one with your name (we avoid this).
+            qr_data = qr_resp.get('qr_string') or qr_resp.get('short_url') or qr_resp.get('image_url')
+            
+            # 3. Generate Clean Image
+            try:
+                img_bio = generate_clean_qr(qr_data)
+                await query.message.reply_photo(
+                    photo=img_bio,
+                    caption=f"✅ **SCAN & PAY ₹{amount}**\n\nNo need to send screenshots. Link will be sent instantly after payment!",
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                print(f"Error generating clean QR: {e}")
+                # Fallback to Razorpay's image if local generation fails
+                await query.message.reply_photo(
+                    photo=qr_resp['image_url'],
+                    caption=f"✅ SCAN & PAY ₹{amount}\n\nNo need to send screenshots. Link will be sent instantly after payment!"
+                )
+            return
+
+        # Crypto/Remitly Flow (Manual)
+        DB["payments"].append(entry)
+        save_db(DB)
+        text = build_manual_payment_text(package, method)
+        await query.message.reply_text(text)
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    user_id = msg.from_user.id
+    if msg.photo or msg.document:
+        for p in reversed(DB["payments"]):
+            if p["user_id"] == user_id and p["status"] == "pending" and p["method"] in ("crypto", "remitly"):
+                file_obj = msg.photo[-1] if msg.photo else msg.document
+                file = await file_obj.get_file()
+                save_path = DATA_DIR / f"proof_{user_id}_{int(time.time())}.jpg"
+                await file.download_to_drive(str(save_path))
+                p.setdefault("proof_files", []).append(str(save_path))
+                save_db(DB)
+
+                buttons = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ APPROVE", callback_data=f"approve:{p['payment_id']}"),
+                     InlineKeyboardButton("❌ DECLINE", callback_data=f"decline:{p['payment_id']}")]
+                ])
+                await context.bot.send_photo(chat_id=SETTINGS["admin_chat_id"], photo=open(save_path, "rb"), 
+                                             caption=f"Manual Proof: {user_id}\nPkg: {p['package']}", reply_markup=buttons)
+                return await msg.reply_text("📸 Proof sent to Admin for verification.")
+
+# -------------------- Admin Command Functions --------------------
 async def setlink(update, context):
     if update.effective_chat.id != SETTINGS["admin_chat_id"]: return
+    if len(context.args) < 2: return await update.message.reply_text("/setlink <pkg> <link>")
     SETTINGS['links'][context.args[0]] = context.args[1]
-    save_settings(SETTINGS); await update.message.reply_text("Link Saved.")
+    save_settings(SETTINGS)
+    await update.message.reply_text(f"Link updated for {context.args[0]}")
 
-async def broadcast(update, context):
+async def setprice(update, context):
     if update.effective_chat.id != SETTINGS["admin_chat_id"]: return
-    msg = " ".join(context.args)
-    users = {p['user_id'] for p in DB['payments']}
-    for u in users:
-        try: await context.bot.send_message(u, msg)
-        except: pass
-    await update.message.reply_text(f"Broadcast sent to {len(users)} users.")
+    if len(context.args) < 3: return await update.message.reply_text("/setprice <pkg> <upi/crypto_usd> <val>")
+    pkg, method, val = context.args[0], context.args[1], int(context.args[2])
+    SETTINGS['prices'][pkg][method] = val
+    save_settings(SETTINGS)
+    await update.message.reply_text("Price updated.")
 
-async def income(update, context):
-    if update.effective_chat.id != SETTINGS["admin_chat_id"]: return
-    total = sum(p.get('amount', 0) for p in DB['payments'] if p['status'] == 'verified')
-    await update.message.reply_text(f"💰 Total Verified Income: ₹{total}")
+async def admin_review_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    action, pay_id = query.data.split(":")
+    for p in DB["payments"]:
+        if p["payment_id"] == pay_id:
+            if action == "approve":
+                p["status"] = "verified"
+                save_db(DB)
+                await send_link_to_user(p["user_id"], p["package"])
+                await query.edit_message_text("✅ Approved")
+            elif action == "decline":
+                p["status"] = "declined"
+                save_db(DB)
+                await context.bot.send_message(p["user_id"], "❌ Payment declined.")
+                await query.edit_message_text("❌ Declined")
+            break
 
-async def insights(update, context):
-    if update.effective_chat.id != SETTINGS["admin_chat_id"]: return
-    stats = f"Total Payments: {len(DB['payments'])}\n"
-    stats += f"Verified: {len([p for p in DB['payments'] if p['status']=='verified'])}"
-    await update.message.reply_text(stats)
+async def send_link_to_user(user_id: int, package: str):
+    link = SETTINGS["links"].get(package, "Link not set. Contact admin.")
+    try:
+        await app_instance.bot.send_message(chat_id=user_id, text=f"✅ Access Granted ({package}):\n{link}")
+    except Exception as e:
+        print(f"Failed to send link to {user_id}: {e}")
 
-async def setcrypto(update, context):
-    if update.effective_chat.id != SETTINGS["admin_chat_id"]: return
-    SETTINGS['payment_info']['crypto'] = " ".join(context.args)
-    save_settings(SETTINGS); await update.message.reply_text("Crypto Info Updated.")
+def build_manual_payment_text(package, method):
+    pi = SETTINGS['payment_info']
+    if method == 'crypto':
+        return f"Send ${SETTINGS['prices'][package]['crypto_usd']} ({pi['crypto_network']}) to:\n`{pi['crypto_address']}`\nReply with screenshot."
+    return f"{pi['remitly_info']}\nReply with screenshot."
 
-async def setremitly(update, context):
-    if update.effective_chat.id != SETTINGS["admin_chat_id"]: return
-    SETTINGS['payment_info']['remitly'] = " ".join(context.args)
-    save_settings(SETTINGS); await update.message.reply_text("Remitly Info Updated.")
-
-# -------------------- Webhook --------------------
+# -------------------- Webhook (Auto-Approve UPI) --------------------
 @app.route('/razorpay_webhook', methods=['POST'])
 def razorpay_webhook():
     data = request.json
+    # Razorpay sends different events, we listen for qr_code.credited
     if data.get('event') == 'qr_code.credited':
-        qr_id = data['payload']['qr_code']['entity']['id']
+        qr_entity = data['payload']['qr_code']['entity']
+        qr_id = qr_entity['id']
+        # Extract user_id/package from the notes we sent earlier
+        notes = qr_entity.get('notes', {})
+        user_id = int(notes.get('user_id', 0))
+        package = notes.get('package', 'unknown')
+
         for p in DB["payments"]:
-            if p.get("rzp_id") == qr_id and p["status"] == "pending":
+            # Check if this QR matches a pending payment
+            if p.get("razorpay_qr_id") == qr_id and p["status"] == "pending":
                 p["status"] = "verified"
                 save_db(DB)
-                if BOT_LOOP: asyncio.run_coroutine_threadsafe(app_instance.bot.send_message(p['user_id'], f"✅ Access Granted:\n{SETTINGS['links'][p['package']]}"), BOT_LOOP)
+                if BOT_LOOP and user_id:
+                    asyncio.run_coroutine_threadsafe(send_link_to_user(user_id, package), BOT_LOOP)
+                break
     return jsonify({"status": "ok"}), 200
 
 # -------------------- Startup --------------------
@@ -189,21 +309,20 @@ async def post_init(application):
     global BOT_LOOP
     BOT_LOOP = asyncio.get_running_loop()
 
+def run_flask():
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
 if __name__ == "__main__":
-    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=8080), daemon=True).start()
-    application = ApplicationBuilder().token(os.environ.get("BOT_TOKEN")).post_init(post_init).build()
+    threading.Thread(target=run_flask, daemon=True).start()
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app_instance = application
-    
-    # User Handlers
+
     application.add_handler(CommandHandler('start', start_handler))
-    application.add_handler(CallbackQueryHandler(callback_handler))
-    
-    # Admin Handlers
     application.add_handler(CommandHandler('setlink', setlink))
-    application.add_handler(CommandHandler('broadcast', broadcast))
-    application.add_handler(CommandHandler('income', income))
-    application.add_handler(CommandHandler('insights', insights))
-    application.add_handler(CommandHandler('setcrypto', setcrypto))
-    application.add_handler(CommandHandler('setremitly', setremitly))
-    
+    application.add_handler(CommandHandler('setprice', setprice))
+    application.add_handler(CallbackQueryHandler(callback_handler, pattern="^(choose_|pay_|cancel)"))
+    application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
+    application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, message_handler))
+
+    print("Bot is running...")
     application.run_polling()
