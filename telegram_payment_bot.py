@@ -12,6 +12,7 @@ import hmac
 import hashlib
 import threading
 import asyncio
+from PIL import Image, ImageDraw, ImageFont, ImageChops
 from typing import Dict, Any
 from pathlib import Path
 import sys
@@ -488,7 +489,24 @@ def build_manual_payment_text(package, method):
 # -------------------- Webhook (Auto-Approve UPI) --------------------
 @app.route('/razorpay_webhook', methods=['POST'])
 def razorpay_webhook():
+
+    # ---------------- SIGNATURE VERIFICATION ----------------
+    received_sig = request.headers.get("X-Razorpay-Signature", "")
+    body = request.data
+
+    calc_sig = hmac.new(
+        bytes(RAZORPAY_WEBHOOK_SECRET, 'utf-8'),
+        body,
+        hashlib.sha256
+    ).hexdigest()
+
+    if not hmac.compare_digest(received_sig, calc_sig):
+        print("❌ Invalid Razorpay Signature")
+        return jsonify({"status": "invalid signature"}), 400
+
+    # ---------------- VALIDATED PAYLOAD ----------------
     data = request.json
+
     if data.get('event') == 'qr_code.credited':
         qr_entity = data['payload']['qr_code']['entity']
         qr_id = qr_entity['id']
