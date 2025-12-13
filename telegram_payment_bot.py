@@ -113,9 +113,11 @@ def main_keyboard():
         [InlineKeyboardButton("VIP", callback_data="choose_vip")],
         [InlineKeyboardButton("DARK", callback_data="choose_dark")],
         [InlineKeyboardButton("BOTH (30% off)", callback_data="choose_both")],
+        [InlineKeyboardButton("Check Payment Status", callback_data="status_btn")],
         [InlineKeyboardButton("HELP", callback_data="help")],
     ]
     return InlineKeyboardMarkup(kb)
+
     
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -134,6 +136,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "help":
         await query.message.reply_text("Contact help: @Dark123222_bot")
         return
+        
+    if data == "status_btn":
+        fake_update = update
+        fake_update.message = query.message
+    return await status_handler(fake_update, context)
+
 
     # ----- PACKAGE SELECTION -----
     if data.startswith("choose_"):
@@ -245,7 +253,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
-
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     user_id = msg.from_user.id
@@ -284,7 +291,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 p.setdefault("proof_files", []).append(str(save_path))
                 save_db(DB)
 
-                # -------- SEND TO ADMIN ----------
+                # -------- FORWARD TO ADMIN ----------
                 buttons = InlineKeyboardMarkup([
                     [
                         InlineKeyboardButton("✅ APPROVE", callback_data=f"approve:{p['payment_id']}"),
@@ -299,10 +306,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=buttons
                 )
 
+                # -------- AUTO-DELETE USER'S UPLOADED SCREENSHOT ----------
+                try:
+                    await context.bot.delete_message(chat_id=user_id, message_id=msg.message_id)
+                except:
+                    pass
+
                 # -------- SEND UNDER REVIEW MESSAGE TO USER ----------
-                return await msg.reply_text(
-                    "⏳ **Payment Under Review**\nAdmin is verifying your proof..."
+                return await context.bot.send_message(
+                    chat_id=user_id,
+                    text="⏳ **Payment Under Review**\nAdmin is verifying your proof..."
                 )
+
 
 
 
@@ -844,6 +859,33 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="Markdown")
 
+async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    # Find latest payment by this user
+    user_payments = [p for p in DB["payments"] if p["user_id"] == user_id]
+    if not user_payments:
+        return await update.message.reply_text("❌ No payment found. Start with /start")
+
+    p = user_payments[-1]  # latest
+
+    status_map = {
+        "pending": "🟡 Pending (Waiting for your payment)",
+        "review": "🟠 Under Review by Admin",
+        "verified": "🟢 Verified — Access Granted",
+        "declined": "🔴 Declined — Submit correct proof",
+        "expired": "⚫ Expired — Start again",
+    }
+
+    text = (
+        "📄 **Your Payment Status**\n\n"
+        f"📦 Package: *{p['package'].upper()}*\n"
+        f"💳 Method: *{p['method']}*\n"
+        f"🧾 Status: {status_map.get(p['status'], 'Unknown')}\n"
+        f"⏱ Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(p['created_at']))}"
+    )
+
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 if __name__ == "__main__":
@@ -866,6 +908,8 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler('broadcast', broadcast_cmd))
     application.add_handler(MessageHandler(filters.PHOTO & filters.CaptionRegex("^/broadcast"), broadcast_cmd))
     application.add_handler(MessageHandler(filters.Document.ALL & filters.CaptionRegex("^/broadcast"), broadcast_cmd))
+    application.add_handler(CommandHandler('status', status_handler))
+
 
 
     # ADMIN EXTRA COMMANDS
