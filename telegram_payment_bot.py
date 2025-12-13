@@ -574,20 +574,24 @@ async def adminpanel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Set VIP Link", callback_data="admin_setlink_vip"),
-            InlineKeyboardButton("Set DARK Link", callback_data="admin_setlink_dark")
-        ],
-        [
-            InlineKeyboardButton("Set BOTH Link", callback_data="admin_setlink_both"),
-        ],
-        [
-            InlineKeyboardButton("Pending Payments", callback_data="admin_pending"),
-        ],
-        [
-            InlineKeyboardButton("Close", callback_data="admin_close")
-        ]
-    ])
+    [
+        InlineKeyboardButton("Set VIP Link", callback_data="admin_setlink_vip"),
+        InlineKeyboardButton("Set DARK Link", callback_data="admin_setlink_dark")
+    ],
+    [
+        InlineKeyboardButton("Set BOTH Link", callback_data="admin_setlink_both"),
+    ],
+    [
+        InlineKeyboardButton("Pending Payments", callback_data="admin_pending"),
+    ],
+    [
+        InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"),
+    ],
+    [
+        InlineKeyboardButton("Close", callback_data="admin_close")
+    ]
+])
+
 
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
 # -------------------- ADMIN EXTRA COMMANDS --------------------
