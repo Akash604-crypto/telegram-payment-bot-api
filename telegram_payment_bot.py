@@ -861,16 +861,21 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await update.message.reply_text(text, parse_mode="Markdown")
-
 async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    # Determine where to reply
+    if update.callback_query:
+        user_id = update.callback_query.from_user.id
+        reply_func = update.callback_query.message.reply_text
+    else:
+        user_id = update.effective_user.id
+        reply_func = update.message.reply_text
 
-    # Find latest payment by this user
+    # Find latest payment
     user_payments = [p for p in DB["payments"] if p["user_id"] == user_id]
     if not user_payments:
-        return await update.message.reply_text("❌ No payment found. Start with /start")
+        return await reply_func("❌ No payment found. Start with /start")
 
-    p = user_payments[-1]  # latest
+    p = user_payments[-1]
 
     status_map = {
         "pending": "🟡 Pending (Waiting for your payment)",
@@ -888,7 +893,8 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⏱ Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(p['created_at']))}"
     )
 
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await reply_func(text, parse_mode="Markdown")
+
 
 
 if __name__ == "__main__":
