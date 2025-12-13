@@ -136,11 +136,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "help":
         await query.message.reply_text("Contact help: @Dark123222_bot")
         return
-        
+
+    # ----- STATUS BUTTON -----
     if data == "status_btn":
         fake_update = update
         fake_update.message = query.message
-    return await status_handler(fake_update, context)
+        return await status_handler(fake_update, context)
+
+
 
 
     # ----- PACKAGE SELECTION -----
@@ -902,7 +905,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler('adminpanel', adminpanel))   # <-- ADDED
 
     # CALLBACK BUTTON HANDLERS
-    application.add_handler(CallbackQueryHandler(callback_handler, pattern="^(choose_|pay_|cancel|help)"))
+    application.add_handler(CallbackQueryHandler(callback_handler, pattern="^(choose_|pay_|cancel|help|status_btn)"))
     application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
     application.add_handler(CallbackQueryHandler(adminpanel_buttons, pattern="^admin_"))
     application.add_handler(CommandHandler('broadcast', broadcast_cmd))
