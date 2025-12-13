@@ -250,9 +250,25 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     user_id = msg.from_user.id
+
+    # USER SENT PHOTO OR DOCUMENT
     if msg.photo or msg.document:
+
+        # Find latest manual pending payment
         for p in reversed(DB["payments"]):
+
             if p["user_id"] == user_id and p["status"] == "pending" and p["method"] in ("crypto", "remitly"):
+
+                # -------- DELETE OLD PAYMENT INSTRUCTION MESSAGE ----------
+                try:
+                    old_chat = p.get("chat_id")
+                    old_msg = p.get("message_id")
+                    if old_chat and old_msg:
+                        await context.bot.delete_message(old_chat, old_msg)
+                except Exception as e:
+                    print("Failed to delete old instruction message:", e)
+
+                # -------- SAVE PROOF FILE ----------
                 file_obj = msg.photo[-1] if msg.photo else msg.document
                 file = await file_obj.get_file()
                 save_path = DATA_DIR / f"proof_{user_id}_{int(time.time())}.jpg"
@@ -260,13 +276,25 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 p.setdefault("proof_files", []).append(str(save_path))
                 save_db(DB)
 
+                # -------- SEND TO ADMIN ----------
                 buttons = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ APPROVE", callback_data=f"approve:{p['payment_id']}"),
-                     InlineKeyboardButton("❌ DECLINE", callback_data=f"decline:{p['payment_id']}")]
+                    [
+                        InlineKeyboardButton("✅ APPROVE", callback_data=f"approve:{p['payment_id']}"),
+                        InlineKeyboardButton("❌ DECLINE", callback_data=f"decline:{p['payment_id']}")
+                    ]
                 ])
-                await context.bot.send_photo(chat_id=SETTINGS["admin_chat_id"], photo=open(save_path, "rb"), 
-                                            caption=f"Manual Proof: {user_id}\nPkg: {p['package']}", reply_markup=buttons)
-                return await msg.reply_text("📸 Proof sent to Admin for verification.")
+
+                await context.bot.send_photo(
+                    chat_id=SETTINGS["admin_chat_id"],
+                    photo=open(save_path, "rb"),
+                    caption=f"Manual Proof: {user_id}\nPkg: {p['package']}",
+                    reply_markup=buttons
+                )
+
+                # -------- CONFIRM TO USER ----------
+                return await msg.reply_text("📸 Payment proof received.\nAdmin will verify shortly.")
+
+
 
 # -------------------- Admin Command Functions (Preserved) --------------------
 async def adminpanel_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
