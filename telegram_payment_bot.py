@@ -166,6 +166,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             entry["razorpay_qr_id"] = qr_resp['id']
             DB["payments"].append(entry)
             save_db(DB)
+            return await query.message.reply_text("Wait QR Sending......")
 
             await query.message.reply_photo(
                 photo=qr_resp['image_url'],
