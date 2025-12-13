@@ -246,7 +246,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     user_id = msg.from_user.id
@@ -254,7 +253,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # USER SENT PHOTO OR DOCUMENT
     if msg.photo or msg.document:
 
-        # Find latest manual pending payment
         for p in reversed(DB["payments"]):
 
             if p["user_id"] == user_id and p["status"] == "pending" and p["method"] in ("crypto", "remitly"):
@@ -267,6 +265,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await context.bot.delete_message(old_chat, old_msg)
                 except Exception as e:
                     print("Failed to delete old instruction message:", e)
+
+                # -------- STOP COUNTDOWN ----------
+                task = COUNTDOWN_TASKS.get(p["payment_id"])
+                if task:
+                    task.cancel()
+                    COUNTDOWN_TASKS.pop(p["payment_id"], None)
+
+                # -------- UPDATE STATUS TO UNDER REVIEW ----------
+                p["status"] = "review"
+                save_db(DB)
 
                 # -------- SAVE PROOF FILE ----------
                 file_obj = msg.photo[-1] if msg.photo else msg.document
@@ -287,12 +295,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_photo(
                     chat_id=SETTINGS["admin_chat_id"],
                     photo=open(save_path, "rb"),
-                    caption=f"Manual Proof: {user_id}\nPkg: {p['package']}",
+                    caption=f"🔎 UNDER REVIEW\nUser: {user_id}\nPackage: {p['package']}",
                     reply_markup=buttons
                 )
 
-                # -------- CONFIRM TO USER ----------
-                return await msg.reply_text("📸 Payment proof received.\nAdmin will verify shortly.")
+                # -------- SEND UNDER REVIEW MESSAGE TO USER ----------
+                return await msg.reply_text(
+                    "⏳ **Payment Under Review**\nAdmin is verifying your proof..."
+                )
+
 
 
 
@@ -381,13 +392,13 @@ async def admin_review_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     action, pay_id = query.data.split(":")
 
-    # Stop countdown if exists
+    # STOP countdown if exists
     task = COUNTDOWN_TASKS.get(pay_id)
     if task:
         task.cancel()
         COUNTDOWN_TASKS.pop(pay_id, None)
 
-    # Find payment record
+    # FIND PAYMENT RECORD
     for p in DB["payments"]:
         if p["payment_id"] == pay_id:
 
@@ -400,62 +411,86 @@ async def admin_review_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             else:
                 amount = f"₹{SETTINGS['prices'][package]['upi']}"
 
-            # ------- APPROVE -------
+            # -------------------- APPROVE --------------------
             if action == "approve":
+
+                # Must be under review
+                if p["status"] != "review":
+                    await query.answer("Payment is not under review.", show_alert=True)
+                    return
+
                 p["status"] = "verified"
                 save_db(DB)
 
                 # Update admin message
                 try:
                     await query.edit_message_caption(
-                        caption=f"✅ Approved payment (ID: {pay_id}) for user: {user_id} | amount: {amount}",
+                        caption=(
+                            f"✅ Approved Payment\n"
+                            f"User: {user_id}\n"
+                            f"Package: {package.upper()}\n"
+                            f"Amount: {amount}"
+                        ),
                         reply_markup=None
                     )
                 except:
                     await query.edit_message_text(
-                        f"✅ Approved payment (ID: {pay_id}) for user: {user_id} | amount: {amount}",
+                        f"✅ Approved Payment\nUser: {user_id}\nPackage: {package.upper()}\nAmount: {amount}",
                         reply_markup=None
                     )
 
-                # Send access to user
+                # SEND ACCESS LINK
                 await send_link_to_user(user_id, package)
 
                 # Notify admin
                 await context.bot.send_message(
                     SETTINGS["admin_chat_id"],
-                    f"✅ Approved payment (ID: {pay_id}) for user: {user_id} | amount: {amount}"
+                    f"✅ Payment Approved (ID: {pay_id}) | User: {user_id} | Amount: {amount}"
                 )
                 return
 
-            # ------- DECLINE -------
+
+            # -------------------- DECLINE --------------------
             if action == "decline":
+
+                # Must be under review
+                if p["status"] != "review":
+                    await query.answer("Payment is not under review.", show_alert=True)
+                    return
+
                 p["status"] = "declined"
                 save_db(DB)
 
                 # Update admin message
                 try:
                     await query.edit_message_caption(
-                        caption=f"❌ Declined payment (ID: {pay_id}) for user: {user_id} | amount: {amount}",
+                        caption=(
+                            f"❌ Declined Payment\n"
+                            f"User: {user_id}\n"
+                            f"Package: {package.upper()}\n"
+                            f"Amount: {amount}"
+                        ),
                         reply_markup=None
                     )
                 except:
                     await query.edit_message_text(
-                        f"❌ Declined payment (ID: {pay_id}) for user: {user_id} | amount: {amount}",
+                        f"❌ Declined Payment\nUser: {user_id}\nPackage: {package.upper()}\nAmount: {amount}",
                         reply_markup=None
                     )
 
                 # Notify user
                 await context.bot.send_message(
                     user_id,
-                    "❌ Payment declined. Please try again."
+                    "❌ Payment Declined.\nPlease send correct proof or try again."
                 )
 
                 # Notify admin
                 await context.bot.send_message(
                     SETTINGS["admin_chat_id"],
-                    f"❌ Declined payment (ID: {pay_id}) for user: {user_id} | amount: {amount}"
+                    f"❌ Payment Declined (ID: {pay_id}) | User: {user_id} | Amount: {amount}"
                 )
                 return
+
 
 
 
