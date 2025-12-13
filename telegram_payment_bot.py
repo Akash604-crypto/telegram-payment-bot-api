@@ -160,14 +160,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if method == "upi":
             amount = SETTINGS["prices"][package]["upi"]
             qr_resp = create_razorpay_smart_qr(amount, user.id, package)
-              return await query.message.reply_text("Wait QR Sending......")
             if not qr_resp:
                 return await query.message.reply_text("❌ System Busy. Try again later.")
             
             entry["razorpay_qr_id"] = qr_resp['id']
             DB["payments"].append(entry)
             save_db(DB)
-          
 
             await query.message.reply_photo(
                 photo=qr_resp['image_url'],
