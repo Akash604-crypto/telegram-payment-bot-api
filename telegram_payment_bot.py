@@ -1,3 +1,4 @@
+
 """
 Telegram Payment Bot (single-file)
 UPGRADED: UPI uses Smart Dynamic QR (Auto-Approve).
@@ -35,10 +36,13 @@ from telegram.ext import (
 
 # -------------------- Configuration & storage --------------------
 COUNTDOWN_TASKS = {}
-DATA_DIR = Path(os.environ.get("DATA_DIR", "./data"))
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_FILE = DATA_DIR / "payments.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
+USERS_FILE = DATA_DIR / "users.json"
+
+
 
 DEFAULT_SETTINGS = {
     "admin_chat_id": int(os.environ.get("ADMIN_CHAT_ID", "7202040199")),
@@ -66,6 +70,18 @@ RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
 RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
 
 BOT_LOOP = None
+
+
+def load_users():
+    if USERS_FILE.exists():
+        return json.loads(USERS_FILE.read_text())
+    return []
+
+def save_users(users):
+    USERS_FILE.write_text(json.dumps(users, indent=2))
+
+USERS = list(set(load_users()))
+
 
 def load_db():
     if DB_FILE.exists(): return json.loads(DB_FILE.read_text())
@@ -109,6 +125,13 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
         return None
 
 # -------------------- Bot Handlers --------------------
+def get_buyer_ids():
+    return {p["user_id"] for p in DB["payments"] if p["status"] == "verified"}
+
+def get_nonbuyer_ids():
+    buyers = get_buyer_ids()
+    return {uid for uid in USERS if uid not in buyers}
+
 app = Flask(__name__)
 TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN")
 
@@ -125,12 +148,21 @@ def main_keyboard():
     
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+
+    if user.id not in USERS:
+        USERS.append(user.id)
+        USERS[:] = list(set(USERS))
+        save_users(USERS)
+
+
+
     name = user.first_name or "there"
 
     text = (
-        f"Welcome {name} 👋\n\n"
-        "Select a package below to proceed with secure access."
+    f"Welcome {name} 👋\n\n"
+    "Select a package below to proceed with secure access."
     )
+
 
     await update.message.reply_text(
         text,
@@ -342,7 +374,7 @@ async def adminpanel_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
     data = query.data
 
     # Only admin access
-    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
+    if query.from_user.id != SETTINGS["admin_chat_id"]:
         await query.answer("Not allowed.", show_alert=True)
         return
 
@@ -352,10 +384,18 @@ async def adminpanel_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if data == "admin_broadcast":
         await query.message.reply_text(
             "📢 **Broadcast Instructions**\n\n"
-            "To send a broadcast message:\n"
-            "• Text → `/broadcast your message`\n"
-            "• Photo → Send a photo with caption `/broadcast`\n"
-            "• Document → Send a document with caption `/broadcast`\n",
+            "Use the following commands:\n\n"
+            "🌍 `/broadcast_all your message`\n"
+            "– Send to ALL users\n\n"
+            "💰 `/broadcast_buyers your message`\n"
+            "– Send to VERIFIED buyers only\n\n"
+            "❌ `/broadcast_nonbuyers your message`\n"
+            "– Send to NON-buyers\n\n"
+            "📸 For photo/document:\n"
+            "Send media with caption:\n"
+            "`/broadcast_all`\n"
+            "`/broadcast_buyers`\n"
+            "`/broadcast_nonbuyers`\n",
             parse_mode="Markdown"
         )
         await query.answer()
@@ -788,63 +828,7 @@ async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     await update.message.reply_text(text, parse_mode="Markdown")
-async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
-        return
 
-    delivered = 0
-    failed = 0
-
-    users = set()
-    for p in DB["payments"]:
-        if p["status"] == "verified":
-            users.add(p["user_id"])
-
-    # CASE 1: PHOTO OR DOCUMENT BROADCAST
-    if update.message.photo or update.message.document:
-        caption = update.message.caption or ""
-        file_obj = update.message.photo[-1] if update.message.photo else update.message.document
-        file = await file_obj.get_file()
-
-        for uid in users:
-            try:
-                await app_instance.bot.send_message(uid, "📢 *New Broadcast Message:*", parse_mode="Markdown")
-
-                if update.message.photo:
-                    await app_instance.bot.send_photo(uid, file.file_id, caption=caption)
-                else:
-                    await app_instance.bot.send_document(uid, file.file_id, caption=caption)
-
-                delivered += 1
-                await asyncio.sleep(0.05)
-            except:
-                failed += 1
-
-        return await update.message.reply_text(
-            f"📢 **Broadcast Completed**\nDelivered: {delivered}\nFailed: {failed}"
-        )
-
-    # CASE 2: TEXT BROADCAST
-    if context.args:
-        text_to_send = " ".join(context.args)
-
-        for uid in users:
-            try:
-                await app_instance.bot.send_message(uid, text_to_send, parse_mode="Markdown")
-                delivered += 1
-                await asyncio.sleep(0.05)
-            except:
-                failed += 1
-
-        return await update.message.reply_text(
-            f"📢 **Broadcast Completed**\nDelivered: {delivered}\nFailed: {failed}"
-        )
-
-    # NO CONTENT PROVIDED
-    return await update.message.reply_text("Usage:\n\n"
-                                          "📌 Text → `/broadcast your message`\n"
-                                          "📌 Photo → Send photo with caption `/broadcast`\n"
-                                          "📌 Document → Send document with caption `/broadcast`")
 
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -910,6 +894,78 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await reply_func(text, parse_mode="Markdown")
+    
+async def broadcast_to_users(bot, user_ids, update, context):
+    delivered = 0
+    failed = 0
+
+    for uid in user_ids:
+        try:
+            # PHOTO
+            if update.message.photo:
+                await bot.send_photo(
+                    uid,
+                    update.message.photo[-1].file_id,
+                    caption=(update.message.caption or "").replace("/broadcast_all", "")
+                    .replace("/broadcast_buyers", "")
+                    .replace("/broadcast_nonbuyers", "").strip()
+
+                )
+
+            # DOCUMENT
+            elif update.message.document:
+                await bot.send_document(
+                    uid,
+                    update.message.document.file_id,
+                    caption=(
+                        (update.message.caption or "")
+                        .replace("/broadcast_all", "")
+                        .replace("/broadcast_buyers", "")
+                        .replace("/broadcast_nonbuyers", "")
+                        .strip()
+                    )
+                )
+
+
+
+            # TEXT
+            else:
+                text = " ".join(context.args)
+                if not text:
+                    continue
+                await bot.send_message(uid, text, parse_mode="Markdown")
+
+            delivered += 1
+            await asyncio.sleep(0.05)
+
+        except Exception as e:
+            failed += 1
+            print(f"Broadcast failed to {uid}: {e}")
+
+    await update.message.reply_text(
+        f"📢 **Broadcast Completed**\n"
+        f"Delivered: {delivered}\n"
+        f"Failed: {failed}",
+        parse_mode="Markdown"
+    )
+
+
+async def broadcast_all(update, context):
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
+        return
+    await broadcast_to_users(app_instance.bot, USERS, update, context)
+    
+    
+async def broadcast_buyers(update, context):
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
+        return
+    await broadcast_to_users(app_instance.bot, get_buyer_ids(), update, context)
+    
+    
+async def broadcast_nonbuyers(update, context):
+    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
+        return
+    await broadcast_to_users(app_instance.bot, get_nonbuyer_ids(), update, context)
 
 async def setremitlyhowto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != SETTINGS["admin_chat_id"]:
@@ -943,10 +999,53 @@ if __name__ == "__main__":
     application.add_handler(CallbackQueryHandler(callback_handler, pattern="^(choose_.*|pay_.*|cancel|help|status_btn)$"))
     application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
     application.add_handler(CallbackQueryHandler(adminpanel_buttons, pattern="^admin_"))
-    application.add_handler(CommandHandler('broadcast', broadcast_cmd))
-    application.add_handler(MessageHandler(filters.PHOTO & filters.CaptionRegex("^/broadcast"), broadcast_cmd))
-    application.add_handler(MessageHandler(filters.Document.ALL & filters.CaptionRegex("^/broadcast"), broadcast_cmd))
     application.add_handler(CommandHandler('status', status_handler))
+    application.add_handler(CommandHandler("broadcast_all", broadcast_all))
+    application.add_handler(CommandHandler("broadcast_buyers", broadcast_buyers))
+    application.add_handler(CommandHandler("broadcast_nonbuyers", broadcast_nonbuyers))
+    application.add_handler(
+    MessageHandler(
+        filters.PHOTO & filters.CaptionRegex("^/broadcast_all"),
+        broadcast_all
+    )
+)
+
+application.add_handler(
+    MessageHandler(
+        filters.PHOTO & filters.CaptionRegex("^/broadcast_buyers"),
+        broadcast_buyers
+    )
+)
+
+application.add_handler(
+    MessageHandler(
+        filters.PHOTO & filters.CaptionRegex("^/broadcast_nonbuyers"),
+        broadcast_nonbuyers
+    )
+)
+
+application.add_handler(
+    MessageHandler(
+        filters.Document.ALL & filters.CaptionRegex("^/broadcast_all"),
+        broadcast_all
+    )
+)
+
+application.add_handler(
+    MessageHandler(
+        filters.Document.ALL & filters.CaptionRegex("^/broadcast_buyers"),
+        broadcast_buyers
+    )
+)
+
+application.add_handler(
+    MessageHandler(
+        filters.Document.ALL & filters.CaptionRegex("^/broadcast_nonbuyers"),
+        broadcast_nonbuyers
+    )
+)
+
+
 
 
 
@@ -957,7 +1056,7 @@ if __name__ == "__main__":
     # MEDIA HANDLER
     application.add_handler(
         MessageHandler(
-            (filters.PHOTO | filters.Document.ALL) & ~filters.CaptionRegex("^/broadcast"),
+            (filters.PHOTO | filters.Document.ALL) & ~filters.CaptionRegex("^/broadcast_"),
             message_handler
         )
     )
