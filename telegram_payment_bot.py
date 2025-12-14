@@ -834,7 +834,7 @@ async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != SETTINGS["admin_chat_id"]:
         return
-
+    total_users = len(USERS) 
     total_sales = len([p for p in DB["payments"] if p["status"] == "verified"])
     total_pending = len([p for p in DB["payments"] if p["status"] == "pending"])
     total_expired = len([p for p in DB["payments"] if p["status"] == "expired"])
@@ -851,6 +851,7 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         "📊 **BOT SALES STATISTICS**\n\n"
+        f"👥 **Total Users Started Bot:** {total_users}\n\n"
         f"✅ Verified Payments: *{total_sales}*\n"
         f"🟡 Pending Payments: *{total_pending}*\n"
         f"⛔ Declined: *{total_declined}*\n"
