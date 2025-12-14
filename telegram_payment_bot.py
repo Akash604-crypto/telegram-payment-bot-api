@@ -1045,20 +1045,18 @@ application.add_handler(
     )
 )
 
+# ADMIN EXTRA COMMANDS
+application.add_handler(CommandHandler('pending', pending_cmd))
+application.add_handler(CommandHandler('stats', stats_cmd))
 
-
-
-
-    # ADMIN EXTRA COMMANDS
-    application.add_handler(CommandHandler('pending', pending_cmd))
-    application.add_handler(CommandHandler('stats', stats_cmd))
-
-    # MEDIA HANDLER
-    application.add_handler(
-        MessageHandler(
-            (filters.PHOTO | filters.Document.ALL) & ~filters.CaptionRegex("^/broadcast_"),
-            message_handler
-        )
+# MEDIA HANDLER
+application.add_handler(
+    MessageHandler(
+        (filters.PHOTO | filters.Document.ALL) & ~filters.CaptionRegex("^/broadcast_"),
+        message_handler
     )
+)
 
-    application.run_polling()
+application.run_polling()
+
+
