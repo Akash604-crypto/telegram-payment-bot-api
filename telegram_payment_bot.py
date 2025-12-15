@@ -257,6 +257,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             p["status"] == "verified"
             for p in DB["payments"]
         ):
+            # ✅ SAFE to clear reminders here
+            clear_user_reminders(user.id)
             await query.message.reply_text(
                 "✅ You already have access to this package.\n\n"
                 "No payment is required.\n"
@@ -265,15 +267,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_link_to_user(user.id, package)
             return
 
+        
         clear_user_reminders(user.id)
-
         REMINDERS.append({
             "user_id": user.id,
             "package": data.split("_")[1],
             "intent": "package_clicked",
             "created_at": int(time.time()),
             "sent": [],
-            "touched": False   # ✅ ADD THIS
+            "touched": False,   # ✅ ADD THIS
+            "clicked_from_reminder": False
         })
         save_reminders(REMINDERS)
 
@@ -297,6 +300,31 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "cancel":
         await query.message.reply_text("Menu closed. Use /start to reopen.")
         return
+    
+    # ----- REMINDER PAYMENT BUTTON -----
+    if data.startswith("reminder_pay_"):
+        part, package = data.split(":")
+        method = part.replace("reminder_pay_", "")
+
+        # mark reminder as clicked
+        for r in REMINDERS:
+            if r["user_id"] == user.id:
+                r["clicked_from_reminder"] = True
+                save_reminders(REMINDERS)
+                break
+
+        # forward to normal payment flow
+        return await callback_handler(
+            Update.de_json({
+                "callback_query": {
+                    "id": query.id,
+                    "from": query.from_user.to_dict(),
+                    "message": query.message.to_dict(),
+                    "data": f"pay_{method}:{package}"
+                }
+            }, context.bot),
+            context
+        )
 
     # ----- PAYMENT METHOD SELECTED -----
     if data.startswith("pay_"):
@@ -312,6 +340,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "status": "pending",
             "created_at": int(time.time()),
         }
+        entry["from_reminder"] = any(
+            r["user_id"] == user.id and r.get("clicked_from_reminder")
+            for r in REMINDERS
+        )
+
 
         # ---------- UPI (WITH 10 MIN COUNTDOWN) ----------
         if method == "upi":
@@ -328,14 +361,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             entry["razorpay_qr_id"] = qr_resp["id"]
+            
             clear_user_reminders(user.id)
+            
             REMINDERS.append({
                 "user_id": user.id,
                 "package": package,
                 "intent": "upi_clicked",
                 "created_at": int(time.time()),
                 "sent": [],
-                "touched": False   # ✅ ADD THIS
+                "touched": False,  # ✅ ADD THIS
+                "clicked_from_reminder": False
             })
             save_reminders(REMINDERS)
 
@@ -374,13 +410,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # ---------- MANUAL PAYMENTS (CRYPTO / REMITLY — 30 MIN COUNTDOWN) ----------
         clear_user_reminders(user.id)
+
         REMINDERS.append({
             "user_id": user.id,
             "package": package,
             "intent": "manual_clicked",
             "created_at": int(time.time()),
             "sent": [],
-            "touched": False   # ✅ ADD THIS
+            "touched": False,   # ✅ ADD THIS
+            "clicked_from_reminder": False
         })
         save_reminders(REMINDERS)
 
@@ -485,7 +523,7 @@ def is_admin(update):
 # reminder_analytics_from_button
 async def reminder_analytics_from_button(query):
     # ---- OLD REMINDER METRICS ----
-    total_users = len(REMINDERS)
+    total_users = len(set(r["user_id"] for r in REMINDERS))
     package_clicked = sum(1 for r in REMINDERS if r["intent"] == "package_clicked")
     upi_clicked = sum(1 for r in REMINDERS if r["intent"] == "upi_clicked")
     manual_clicked = sum(1 for r in REMINDERS if r["intent"] == "manual_clicked")
@@ -708,12 +746,7 @@ async def admin_review_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     return
 
                 p["status"] = "verified"
-                p["from_reminder"] = any(
-                    r["user_id"] == p["user_id"]
-                    and r.get("touched")
-                    and p["created_at"] >= r["created_at"]
-                    for r in REMINDERS
-                )
+                
 
                 save_db(DB)
 
@@ -880,13 +913,7 @@ def razorpay_webhook():
             if p.get("razorpay_qr_id") == qr_id and p["status"] == "pending":
                 
                 p["status"] = "verified"
-                # ✅ MARK IF PURCHASE CAME FROM REMINDER
-                p["from_reminder"] = any(
-                    r["user_id"] == p["user_id"]
-                    and r.get("touched")
-                    and p["created_at"] >= r["created_at"]
-                    for r in REMINDERS
-                )
+               
 
                 clear_user_reminders(user_id)
                 save_db(DB)
@@ -1142,22 +1169,11 @@ async def reminder_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     clear_user_reminders(user_id)
 
-    REMINDERS.append({
-        "user_id": user_id,
-        "package": "unknown",  # default, will update on click
-        "intent": "package_clicked",
-        "created_at": int(time.time()),
-        "sent": [],
-        "touched": False   # ✅ ADD THIS
-    })
-    save_reminders(REMINDERS)
-
     await update.message.reply_text(
-        "🔔 **Reminders enabled again!**\n\n"
-        "Continue by selecting a package:\n"
-        "Use /start to proceed.",
-        parse_mode="Markdown"
+        "🔔 Reminders enabled.\n\nUse /start and select a package to continue."
     )
+    return
+
 
 
 async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1308,19 +1324,19 @@ def get_due_reminders(r):
     return due
 REMINDER_MESSAGES = {
     "package_clicked": {
-        1: "👋 Hey!\n\nYou opened *{pkg}* a little while ago.\nMost users finish this step in under a minute.\n\nContinue → /start",
-        2: "🧠 Quick check-in\n\nYou explored *{pkg}* earlier.\nAccess is still open.\n\nResume anytime → /start",
-        3: "🌙 Good evening\n\nYou checked *{pkg}* earlier.\nNo pressure at all.\n\nStart again → /start",
+        1: "👋 Hey!\n\nYou opened *{pkg}* a little while ago.\nMost users finish this step in under a minute.\n\nTap the button below to continue 👇",
+        2: "🧠 Quick check-in\n\nYou explored *{pkg}* earlier.\nAccess is still open.\n\nTap the button below to continue 👇",
+        3: "🌙 Good evening\n\nYou checked *{pkg}* earlier.\nNo pressure at all.\n\nTap the button below to continue 👇",
     },
     "upi_clicked": {
-        1: "⚡ Just a reminder\n\nYou chose UPI for *{pkg}*.\nUPI is instant & auto-approved.\n\nContinue → /start",
-        2: "🔔 Still interested?\n\nUPI is the fastest way to unlock *{pkg}*.\nNo screenshots needed.\n\nResume → /start",
-        3: "🌙 Ending the day note\n\nYour UPI option for *{pkg}* is still available.\n\nOpen menu → /start",
+        1: "⚡ Just a reminder\n\nYou chose UPI for *{pkg}*.\nUPI is instant & auto-approved.\n\nTap the button below to continue 👇",
+        2: "🔔 Still interested?\n\nUPI is the fastest way to unlock *{pkg}*.\nNo screenshots needed.\n\nTap the button below to continue 👇",
+        3: "🌙 Ending the day note\n\nYour UPI option for *{pkg}* is still available.\n\nTap the button below to continue 👇",
     },
     "manual_clicked": {
-        1: "📌 Heads up\n\nYour *{pkg}* payment session is active.\nAfter payment, upload the screenshot here.\n\nContinue → /start",
-        2: "🛠 Need assistance?\n\nManual payments take a little longer.\nWe’re here if you need help.\n\nResume → /start",
-        3: "🌙 Final check\n\nIf now isn’t the right time, that’s okay.\n\nYou can return anytime → /start",
+        1: "📌 Heads up\n\nYour *{pkg}* payment session is active.\nAfter payment, upload the screenshot here.\n\nTap the button below to continue 👇",
+        2: "🛠 Need assistance?\n\nManual payments take a little longer.\nWe’re here if you need help.\n\nTap the button below to continue 👇",
+        3: "🌙 Final check\n\nIf now isn’t the right time, that’s okay.\n\nYou can return anytime → Tap the button below to continue 👇",
     }
 }
 
@@ -1343,13 +1359,38 @@ async def reminder_loop():
                 try:
                     msg = REMINDER_MESSAGES.get(r["intent"], {}).get(step)
 
-                    if msg:
-                        await app_instance.bot.send_message(
-                            r["user_id"],
-                            msg.format(pkg=r["package"].upper()),
-                            parse_mode="Markdown"
-                        )
-                        r["touched"] = True   # ✅ USER ACTUALLY RECEIVED REMINDER
+                    buttons = []
+
+                    # PACKAGE CLICKED → show all
+                    if r["intent"] == "package_clicked":
+                        buttons = [
+                            [InlineKeyboardButton("💸 Pay via UPI", callback_data=f"reminder_pay_upi:{r['package']}")],
+                            [InlineKeyboardButton("🪙 Crypto", callback_data=f"reminder_pay_crypto:{r['package']}")],
+                            [InlineKeyboardButton("🌍 Remitly", callback_data=f"reminder_pay_remitly:{r['package']}")]
+                        ]
+
+                    # UPI CLICKED → UPI only
+                    elif r["intent"] == "upi_clicked":
+                        buttons = [
+                            [InlineKeyboardButton("💸 Pay via UPI", callback_data=f"reminder_pay_upi:{r['package']}")]
+                        ]
+
+                    # MANUAL CLICKED → Crypto + Remitly
+                    elif r["intent"] == "manual_clicked":
+                        buttons = [
+                            [InlineKeyboardButton("🪙 Crypto", callback_data=f"reminder_pay_crypto:{r['package']}")],
+                            [InlineKeyboardButton("🌍 Remitly", callback_data=f"reminder_pay_remitly:{r['package']}")]
+                        ]
+
+                    await app_instance.bot.send_message(
+                        r["user_id"],
+                        msg.format(pkg=r["package"].upper()),
+                        reply_markup=InlineKeyboardMarkup(buttons),
+                        parse_mode="Markdown"
+                    )
+
+                    r["touched"] = True
+
 
 
                     r["sent"].append(step)
