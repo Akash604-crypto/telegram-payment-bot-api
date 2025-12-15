@@ -138,6 +138,42 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
         return None
 
 # -------------------- Bot Handlers --------------------
+def conversion_stats(days=None):
+    """
+    days = None  -> all time
+    days = 0     -> today
+    days = 7     -> last 7 days
+    days = 30    -> last 30 days
+    """
+    now = int(time.time())
+
+    def in_range(p):
+        if p["status"] != "verified":
+            return False
+        if days is None:
+            return True
+        if days == 0:
+            start = time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1))
+            return p["created_at"] >= start
+        return p["created_at"] >= now - days * 86400
+
+    stats = {
+        "upi": {"vip": 0, "dark": 0, "both": 0},
+        "manual": {"vip": 0, "dark": 0, "both": 0},
+    }
+
+    for p in DB["payments"]:
+        if not in_range(p):
+            continue
+
+        method = "upi" if p["method"] == "upi" else "manual"
+        pkg = p["package"]
+
+        if pkg in stats[method]:
+            stats[method][pkg] += 1
+
+    return stats
+
 def clear_user_reminders(user_id):
     global REMINDERS
     REMINDERS = [r for r in REMINDERS if r["user_id"] != user_id]
@@ -209,6 +245,23 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ----- PACKAGE SELECTION -----
     if data.startswith("choose_"):
+        # 🚫 BLOCK IF USER ALREADY PAID FOR THIS PACKAGE
+        package = data.split("_")[1]
+
+        if any(
+            p["user_id"] == user.id and
+            p["package"] == package and
+            p["status"] == "verified"
+            for p in DB["payments"]
+        ):
+            await query.message.reply_text(
+                "✅ You already have access to this package.\n\n"
+                "No payment is required.\n"
+                "Your access has been restored below 👇"
+            )
+            await send_link_to_user(user.id, package)
+            return
+
         clear_user_reminders(user.id)
 
         REMINDERS.append({
@@ -426,24 +479,45 @@ def is_admin(update):
 
 # reminder_analytics_from_button
 async def reminder_analytics_from_button(query):
-    total = len(REMINDERS)
+    # ---- OLD REMINDER METRICS ----
+    total_users = len(REMINDERS)
+    package_clicked = sum(1 for r in REMINDERS if r["intent"] == "package_clicked")
+    upi_clicked = sum(1 for r in REMINDERS if r["intent"] == "upi_clicked")
+    manual_clicked = sum(1 for r in REMINDERS if r["intent"] == "manual_clicked")
+    reminders_sent = sum(len(r["sent"]) for r in REMINDERS)
 
-    pkg = sum(1 for r in REMINDERS if r["intent"] == "package_clicked")
-    upi = sum(1 for r in REMINDERS if r["intent"] == "upi_clicked")
-    manual = sum(1 for r in REMINDERS if r["intent"] == "manual_clicked")
+    # ---- NEW CONVERSION METRICS ----
+    today = conversion_stats(days=0)
+    week = conversion_stats(days=7)
+    month = conversion_stats(days=30)
+    total = conversion_stats(days=None)
 
-    sent = sum(len(r["sent"]) for r in REMINDERS)
+    def block(title, data):
+        return (
+            f"**{title}**\n"
+            f"UPI → VIP: {data['upi']['vip']} | DARK: {data['upi']['dark']} | BOTH: {data['upi']['both']}\n"
+            f"MANUAL → VIP: {data['manual']['vip']} | DARK: {data['manual']['dark']} | BOTH: {data['manual']['both']}\n"
+        )
 
     text = (
-        "📊 **REMINDER ANALYTICS**\n\n"
-        f"👥 Active Users: {total}\n"
-        f"📦 Package Clicked: {pkg}\n"
-        f"💸 UPI Clicked: {upi}\n"
-        f"🪙 Manual Clicked: {manual}\n\n"
-        f"📨 Reminders Sent: {sent}"
+        "📊 **REMINDER & CONVERSION ANALYTICS**\n\n"
+        "🔔 **Reminder Funnel**\n"
+        f"👥 Active Users: *{total_users}*\n"
+        f"📦 Package Clicked: *{package_clicked}*\n"
+        f"💸 UPI Clicked: *{upi_clicked}*\n"
+        f"🪙 Manual Clicked: *{manual_clicked}*\n"
+        f"📨 Reminders Sent: *{reminders_sent}*\n\n"
+        "———————————————\n\n"
+        "💰 **Conversions**\n\n"
+        + block("📅 Today", today) + "\n"
+        + block("📆 Last 7 Days", week) + "\n"
+        + block("🗓 Last 30 Days", month) + "\n"
+        + block("📦 Total (All Time)", total)
     )
 
     await query.message.reply_text(text, parse_mode="Markdown")
+
+
 
 # Stats (button-safe)
 async def stats_cmd_from_button(query, context):
@@ -1014,31 +1088,7 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await update.message.reply_text(text, parse_mode="Markdown")
-async def reminder_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != SETTINGS["admin_chat_id"]:
-        return
 
-    total = len(REMINDERS)
-
-    package_clicked = sum(1 for r in REMINDERS if r["intent"] == "package_clicked")
-    upi_clicked = sum(1 for r in REMINDERS if r["intent"] == "upi_clicked")
-    manual_clicked = sum(1 for r in REMINDERS if r["intent"] == "manual_clicked")
-
-    total_sent = sum(len(r["sent"]) for r in REMINDERS)
-
-    buyers = get_buyer_ids()
-
-    text = (
-        "📊 **REMINDER ANALYTICS**\n\n"
-        f"👥 Active Reminder Users: *{total}*\n\n"
-        f"📦 Package Clicked: *{package_clicked}*\n"
-        f"💸 UPI Clicked: *{upi_clicked}*\n"
-        f"🪙 Crypto/Remitly Clicked: *{manual_clicked}*\n\n"
-        f"📨 Total Reminders Sent: *{total_sent}*\n"
-        f"✅ Converted Users: *{len(buyers)}*\n"
-    )
-
-    await update.message.reply_text(text, parse_mode="Markdown")
     
 async def reminder_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1282,7 +1332,6 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler('setprice', setprice))
     application.add_handler(CommandHandler('adminpanel', adminpanel)) # <-- ADDED
     application.add_handler(CommandHandler('setremitlyhowto', setremitlyhowto))
-    application.add_handler(CommandHandler("reminder_analytics", reminder_analytics))
     application.add_handler(CommandHandler("reminder_cancel", reminder_cancel))
     application.add_handler(CommandHandler("reminder_start", reminder_start))
 
