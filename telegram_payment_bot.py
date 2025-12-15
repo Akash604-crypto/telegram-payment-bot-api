@@ -156,8 +156,9 @@ def conversion_stats(days=None):
         if days is None:
             return True
         if days == 0:
-            start = time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1))
-            return p["created_at"] >= start
+            today_start = int(time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1)))
+            return p["created_at"] >= today_start
+
         return p["created_at"] >= now - days * 86400
 
     stats = {
@@ -227,6 +228,107 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def handle_payment(method, package, query, context, from_reminder=False):
+    user = query.from_user
+
+    entry = {
+        "payment_id": f"p_{int(time.time()*1000)}",
+        "user_id": user.id,
+        "username": user.username or "",
+        "package": package,
+        "method": method,
+        "status": "pending",
+        "created_at": int(time.time()),
+        "from_reminder": from_reminder,
+    }
+    # Expire any previous pending payment for this user
+    for p in DB["payments"]:
+        if p["user_id"] == user.id and p["status"] == "pending":
+            p["status"] = "expired"
+    save_db(DB)
+
+
+    # ---------- UPI ----------
+    if method == "upi":
+        amount = SETTINGS["prices"][package]["upi"]
+
+        msg1 = await query.message.reply_text("⏳ Creating QR code...")
+        entry["loading_msg_ids"] = [msg1.message_id]
+
+        qr_resp = create_razorpay_smart_qr(amount, user.id, package)
+        if not qr_resp:
+            await msg1.edit_text("❌ System Busy. Try again later.")
+            return
+
+        entry["razorpay_qr_id"] = qr_resp["id"]
+
+        clear_user_reminders(user.id)
+        REMINDERS.append({
+            "user_id": user.id,
+            "package": package,
+            "intent": "upi_clicked",
+            "created_at": int(time.time()),
+            "sent": [],
+            "touched": False,
+            "clicked_from_reminder": from_reminder
+        })
+        save_reminders(REMINDERS)
+
+        DB["payments"].append(entry)
+        save_db(DB)
+
+        await msg1.edit_text("📤 Sending QR code...")
+
+        caption_text = (
+            f"✅ **SCAN & PAY ₹{amount}**\n"
+            f"• Auto-detect payment\n"
+            f"• Do NOT send screenshot\n"
+        )
+
+        qr_msg = await query.message.reply_photo(
+            photo=qr_resp["image_url"],
+            caption=caption_text,
+            parse_mode="Markdown"
+        )
+
+        entry["caption_text"] = caption_text
+        entry["chat_id"] = qr_msg.chat.id
+        entry["message_id"] = qr_msg.message_id
+        save_db(DB)
+
+        COUNTDOWN_TASKS[entry["payment_id"]] = asyncio.create_task(
+            start_countdown(entry["payment_id"], qr_msg.chat.id, qr_msg.message_id, 600)
+        )
+        return
+
+    # ---------- MANUAL ----------
+    clear_user_reminders(user.id)
+    REMINDERS.append({
+        "user_id": user.id,
+        "package": package,
+        "intent": "manual_clicked",
+        "created_at": int(time.time()),
+        "sent": [],
+        "touched": False,
+        "clicked_from_reminder": from_reminder
+    })
+    save_reminders(REMINDERS)
+
+    DB["payments"].append(entry)
+    save_db(DB)
+
+    caption_text = build_manual_payment_text(package, method)
+
+    msg = await query.message.reply_text(caption_text, parse_mode="Markdown")
+    entry["caption_text"] = caption_text
+    entry["chat_id"] = msg.chat.id
+    entry["message_id"] = msg.message_id
+    save_db(DB)
+
+    COUNTDOWN_TASKS[entry["payment_id"]] = asyncio.create_task(
+        start_countdown(entry["payment_id"], msg.chat.id, msg.message_id, 1800)
+    )
+    return
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -336,146 +438,35 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         part, package = data.split(":")
         method = part.replace("reminder_pay_", "")
 
-        # mark reminder as clicked
         for r in REMINDERS:
             if r["user_id"] == user.id:
                 r["clicked_from_reminder"] = True
                 save_reminders(REMINDERS)
                 break
 
-        # forward to normal payment flow
-        return await callback_handler(
-            Update.de_json({
-                "callback_query": {
-                    "id": query.id,
-                    "from": query.from_user.to_dict(),
-                    "message": query.message.to_dict(),
-                    "data": f"pay_{method}:{package}"
-                }
-            }, context.bot),
-            context
+        return await handle_payment(
+            method=method,
+            package=package,
+            query=query,
+            context=context,
+            from_reminder=True
         )
+
 
     # ----- PAYMENT METHOD SELECTED -----
     if data.startswith("pay_"):
         method, package = data.split(":")
         method = method.replace("pay_", "")
 
-        entry = {
-            "payment_id": f"p_{int(time.time()*1000)}",
-            "user_id": user.id,
-            "username": user.username or "",
-            "package": package,
-            "method": method,
-            "status": "pending",
-            "created_at": int(time.time()),
-        }
-        entry["from_reminder"] = any(
-            r["user_id"] == user.id
-            and r.get("clicked_from_reminder")
-            and r["package"] == package
-            for r in REMINDERS
+        return await handle_payment(
+            method=method,
+            package=package,
+            query=query,
+            context=context,
+            from_reminder=False
         )
 
 
-
-        # ---------- UPI (WITH 10 MIN COUNTDOWN) ----------
-        if method == "upi":
-            amount = SETTINGS["prices"][package]["upi"]
-
-            msg1 = await query.message.reply_text("⏳ Creating QR code...")
-
-            # store creating msg id
-            entry["loading_msg_ids"] = [msg1.message_id]
-
-            qr_resp = create_razorpay_smart_qr(amount, user.id, package)
-            if not qr_resp:
-                await msg1.edit_text("❌ System Busy. Try again later.")
-                return
-
-            entry["razorpay_qr_id"] = qr_resp["id"]
-            
-            clear_user_reminders(user.id)
-            
-            REMINDERS.append({
-                "user_id": user.id,
-                "package": package,
-                "intent": "upi_clicked",
-                "created_at": int(time.time()),
-                "sent": [],
-                "touched": False,  # ✅ ADD THIS
-                "clicked_from_reminder": False
-            })
-            save_reminders(REMINDERS)
-
-            DB["payments"].append(entry)
-            save_db(DB)
-
-            # update sending message
-            await msg1.edit_text("📤 Sending QR code...")
-            entry["loading_msg_ids"].append(msg1.message_id)
-            save_db(DB)
-
-            caption_text = (
-                f"✅ **SCAN & PAY ₹{amount}**\n"
-                f"• Auto-detect payment\n"
-                f"• Do NOT send screenshot\n"
-            )
-
-            qr_msg = await query.message.reply_photo(
-                photo=qr_resp["image_url"],
-                caption=caption_text,
-                parse_mode="Markdown"
-            )
-
-            entry["caption_text"] = caption_text
-            entry["chat_id"] = qr_msg.chat.id
-            entry["message_id"] = qr_msg.message_id
-            save_db(DB)
-
-            # Start countdown
-            COUNTDOWN_TASKS[entry["payment_id"]] = asyncio.create_task(
-                start_countdown(entry["payment_id"], qr_msg.chat.id, qr_msg.message_id, 600)
-            )
-
-            return
-
-
-        # ---------- MANUAL PAYMENTS (CRYPTO / REMITLY — 30 MIN COUNTDOWN) ----------
-        clear_user_reminders(user.id)
-
-        REMINDERS.append({
-            "user_id": user.id,
-            "package": package,
-            "intent": "manual_clicked",
-            "created_at": int(time.time()),
-            "sent": [],
-            "touched": False,   # ✅ ADD THIS
-            "clicked_from_reminder": False
-        })
-        save_reminders(REMINDERS)
-
-        DB["payments"].append(entry)
-        save_db(DB)
-
-        caption_text = build_manual_payment_text(package, method)
-
-        msg2 = await query.message.reply_text(
-            caption_text,
-            parse_mode="Markdown"
-        )
-
-        entry["caption_text"] = caption_text
-        entry["chat_id"] = msg2.chat.id
-        entry["message_id"] = msg2.message_id
-        save_db(DB)
-
-        # Start 30-min countdown
-        COUNTDOWN_TASKS[entry["payment_id"]] = asyncio.create_task(
-            start_countdown(entry["payment_id"], msg2.chat.id, msg2.message_id, 1800)
-        )
-
-        return
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
