@@ -298,8 +298,38 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ----- CANCEL -----
     if data == "cancel":
-        await query.message.reply_text("Menu closed. Use /start to reopen.")
+        clear_user_reminders(user.id)
+
+        # stop countdowns & clean messages
+        for p in DB["payments"]:
+            if p["user_id"] == user.id and p["status"] == "pending":
+            
+                # stop countdown
+                task = COUNTDOWN_TASKS.get(p["payment_id"])
+                if task:
+                    task.cancel()
+                    COUNTDOWN_TASKS.pop(p["payment_id"], None)
+
+                # delete payment message (QR or manual)
+                try:
+                    if p.get("chat_id") and p.get("message_id"):
+                        await context.bot.delete_message(
+                            p["chat_id"], p["message_id"]
+                        )
+                except:
+                    pass
+
+                # mark payment as cancelled
+                p["status"] = "expired"
+
+        save_db(DB)
+
+        await query.message.reply_text(
+            "❌ Payment cancelled.\n\nUse /start to begin again."
+        )
         return
+
+
     
     # ----- REMINDER PAYMENT BUTTON -----
     if data.startswith("reminder_pay_"):
@@ -341,9 +371,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "created_at": int(time.time()),
         }
         entry["from_reminder"] = any(
-            r["user_id"] == user.id and r.get("clicked_from_reminder")
+            r["user_id"] == user.id
+            and r.get("clicked_from_reminder")
+            and r["package"] == package
             for r in REMINDERS
         )
+
 
 
         # ---------- UPI (WITH 10 MIN COUNTDOWN) ----------
@@ -996,8 +1029,9 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
         except:
             pass
 
-        await asyncio.sleep(1)
-        seconds -= 1
+        await asyncio.sleep(5)
+        seconds -= 5
+
 
     # TIMEOUT HANDLING
     if p["status"] == "pending":
@@ -1419,7 +1453,13 @@ if __name__ == "__main__":
 
 
     # CALLBACK BUTTON HANDLERS
-    application.add_handler(CallbackQueryHandler(callback_handler, pattern="^(choose_.*|pay_.*|cancel|help|status_btn)$"))
+    application.add_handler(
+        CallbackQueryHandler(
+            callback_handler,
+            pattern="^(choose_.*|pay_.*|reminder_pay_.*|cancel|help|status_btn)$"
+        )
+    )
+
     application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
     application.add_handler(CallbackQueryHandler(adminpanel_buttons, pattern="^admin_"))
     application.add_handler(CommandHandler('status', status_handler))
