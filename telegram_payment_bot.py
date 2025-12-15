@@ -6,19 +6,19 @@ MANUAL: Crypto & Remitly still require Admin Approval.
 """
 
 import os
+import base64
 import json
 import time
 import hmac
 import hashlib
 import threading
 import asyncio
+from PIL import Image, ImageDraw, ImageFont, ImageChops
+from typing import Dict, Any
 from pathlib import Path
+import sys
+
 import requests
-from PIL import Image, ImageChops
-import io
-
-
-
 from flask import Flask, request, jsonify
 from telegram import (
     Update,
@@ -226,25 +226,6 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_keyboard(),
     )
 
-def crop_razorpay_qr(image_bytes):
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-
-    # Detect background
-    bg = Image.new("RGB", img.size, img.getpixel((0, 0)))
-    diff = ImageChops.difference(img, bg)
-    bbox = diff.getbbox()
-
-    if not bbox:
-        return img  # fallback, no crop
-
-    # SAFE margin (do NOT reduce)
-    margin = 30
-    left = max(bbox[0] - margin, 0)
-    top = max(bbox[1] - margin, 0)
-    right = min(bbox[2] + margin, img.width)
-    bottom = min(bbox[3] + margin, img.height)
-
-    return img.crop((left, top, right, bottom))
 
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -317,14 +298,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ----- CANCEL -----
     if data == "cancel":
-        clear_user_reminders(user.id)
-        # stop any active countdown
-        for pid, task in list(COUNTDOWN_TASKS.items()):
-            task.cancel()
-            COUNTDOWN_TASKS.pop(pid, None)
-        await query.message.reply_text(
-            "❌ Payment cancelled.\n\nUse /start to begin again."
-        )
+        await query.message.reply_text("Menu closed. Use /start to reopen.")
         return
     
     # ----- REMINDER PAYMENT BUTTON -----
@@ -367,12 +341,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "created_at": int(time.time()),
         }
         entry["from_reminder"] = any(
-            r["user_id"] == user.id
-            and r.get("clicked_from_reminder")
-            and r["package"] == package
+            r["user_id"] == user.id and r.get("clicked_from_reminder")
             for r in REMINDERS
         )
-
 
 
         # ---------- UPI (WITH 10 MIN COUNTDOWN) ----------
@@ -418,25 +389,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"• Do NOT send screenshot\n"
             )
 
-            # Download QR image
-            qr_img_bytes = requests.get(qr_resp["image_url"], timeout=15).content
-
-            # Crop safely
-            cropped_img = crop_razorpay_qr(qr_img_bytes)
-            cropped_img = cropped_img.resize((1000, 1000), Image.LANCZOS)
-
-
-            # Convert to bytes
-            buf = io.BytesIO()
-            cropped_img.save(buf, format="PNG")
-            buf.seek(0)
-
             qr_msg = await query.message.reply_photo(
-                photo=buf,
+                photo=qr_resp["image_url"],
                 caption=caption_text,
                 parse_mode="Markdown"
             )
-
 
             entry["caption_text"] = caption_text
             entry["chat_id"] = qr_msg.chat.id
@@ -953,12 +910,9 @@ def razorpay_webhook():
         package = qr_entity['notes']['package']
 
         for p in DB["payments"]:
-            if (
-                p.get("razorpay_qr_id") == qr_id
-                and p["status"] == "pending"
-            ):
+            if p.get("razorpay_qr_id") == qr_id and p["status"] == "pending":
+                
                 p["status"] = "verified"
-
                
 
                 clear_user_reminders(user_id)
@@ -1465,13 +1419,7 @@ if __name__ == "__main__":
 
 
     # CALLBACK BUTTON HANDLERS
-    application.add_handler(
-        CallbackQueryHandler(
-             callback_handler,
-             pattern="^(choose_.*|pay_.*|reminder_pay_.*|cancel|help|status_btn)$"
-        )
-    )
-
+    application.add_handler(CallbackQueryHandler(callback_handler, pattern="^(choose_.*|pay_.*|cancel|help|status_btn)$"))
     application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
     application.add_handler(CallbackQueryHandler(adminpanel_buttons, pattern="^admin_"))
     application.add_handler(CommandHandler('status', status_handler))
