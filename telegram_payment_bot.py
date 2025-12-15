@@ -150,6 +150,9 @@ def conversion_stats(days=None):
     def in_range(p):
         if p["status"] != "verified":
             return False
+        # ✅ COUNT ONLY REMINDER-BASED PURCHASES
+        if not p.get("from_reminder"):
+            return False      
         if days is None:
             return True
         if days == 0:
@@ -269,7 +272,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "package": data.split("_")[1],
             "intent": "package_clicked",
             "created_at": int(time.time()),
-            "sent": []
+            "sent": [],
+            "touched": False   # ✅ ADD THIS
         })
         save_reminders(REMINDERS)
 
@@ -330,7 +334,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "package": package,
                 "intent": "upi_clicked",
                 "created_at": int(time.time()),
-                "sent": []
+                "sent": [],
+                "touched": False   # ✅ ADD THIS
             })
             save_reminders(REMINDERS)
 
@@ -374,7 +379,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "package": package,
             "intent": "manual_clicked",
             "created_at": int(time.time()),
-            "sent": []
+            "sent": [],
+            "touched": False   # ✅ ADD THIS
         })
         save_reminders(REMINDERS)
 
@@ -428,7 +434,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     COUNTDOWN_TASKS.pop(p["payment_id"], None)
 
                 # -------- UPDATE STATUS TO UNDER REVIEW ----------
-                clear_user_reminders(user_id)
                 p["status"] = "review"
                 save_db(DB)
 
@@ -703,6 +708,13 @@ async def admin_review_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     return
 
                 p["status"] = "verified"
+                p["from_reminder"] = any(
+                    r["user_id"] == p["user_id"]
+                    and r.get("touched")
+                    and p["created_at"] >= r["created_at"]
+                    for r in REMINDERS
+                )
+
                 save_db(DB)
 
                 # Update admin message
@@ -866,8 +878,17 @@ def razorpay_webhook():
 
         for p in DB["payments"]:
             if p.get("razorpay_qr_id") == qr_id and p["status"] == "pending":
-                clear_user_reminders(user_id)
+                
                 p["status"] = "verified"
+                # ✅ MARK IF PURCHASE CAME FROM REMINDER
+                p["from_reminder"] = any(
+                    r["user_id"] == p["user_id"]
+                    and r.get("touched")
+                    and p["created_at"] >= r["created_at"]
+                    for r in REMINDERS
+                )
+
+                clear_user_reminders(user_id)
                 save_db(DB)
 
                 # STOP countdown if running
@@ -1126,7 +1147,8 @@ async def reminder_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "package": "unknown",  # default, will update on click
         "intent": "package_clicked",
         "created_at": int(time.time()),
-        "sent": []
+        "sent": [],
+        "touched": False   # ✅ ADD THIS
     })
     save_reminders(REMINDERS)
 
@@ -1327,6 +1349,8 @@ async def reminder_loop():
                             msg.format(pkg=r["package"].upper()),
                             parse_mode="Markdown"
                         )
+                        r["touched"] = True   # ✅ USER ACTUALLY RECEIVED REMINDER
+
 
                     r["sent"].append(step)
                     save_reminders(REMINDERS)
