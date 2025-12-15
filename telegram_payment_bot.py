@@ -1284,6 +1284,24 @@ def get_due_reminders(r):
             due.append(3)
 
     return due
+REMINDER_MESSAGES = {
+    "package_clicked": {
+        1: "👋 Hey!\n\nYou opened *{pkg}* a little while ago.\nMost users finish this step in under a minute.\n\nContinue → /start",
+        2: "🧠 Quick check-in\n\nYou explored *{pkg}* earlier.\nAccess is still open.\n\nResume anytime → /start",
+        3: "🌙 Good evening\n\nYou checked *{pkg}* earlier.\nNo pressure at all.\n\nStart again → /start",
+    },
+    "upi_clicked": {
+        1: "⚡ Just a reminder\n\nYou chose UPI for *{pkg}*.\nUPI is instant & auto-approved.\n\nContinue → /start",
+        2: "🔔 Still interested?\n\nUPI is the fastest way to unlock *{pkg}*.\nNo screenshots needed.\n\nResume → /start",
+        3: "🌙 Ending the day note\n\nYour UPI option for *{pkg}* is still available.\n\nOpen menu → /start",
+    },
+    "manual_clicked": {
+        1: "📌 Heads up\n\nYour *{pkg}* payment session is active.\nAfter payment, upload the screenshot here.\n\nContinue → /start",
+        2: "🛠 Need assistance?\n\nManual payments take a little longer.\nWe’re here if you need help.\n\nResume → /start",
+        3: "🌙 Final check\n\nIf now isn’t the right time, that’s okay.\n\nYou can return anytime → /start",
+    }
+}
+
 async def reminder_loop():
     global REMINDERS
     while True:
@@ -1301,16 +1319,15 @@ async def reminder_loop():
 
             for step in due:
                 try:
-                    await app_instance.bot.send_message(
-                        r["user_id"],
-                        (
-                            "⏳ Friendly reminder\n\n"
-                            f"You were checking *{r['package'].upper()}* access earlier.\n\n"
-                            "You can continue anytime using /start\n"
-                            "Need help? Tap 🆘 Help"
-                        ),
-                        parse_mode="Markdown"
-                    )
+                    msg = REMINDER_MESSAGES.get(r["intent"], {}).get(step)
+
+                    if msg:
+                        await app_instance.bot.send_message(
+                            r["user_id"],
+                            msg.format(pkg=r["package"].upper()),
+                            parse_mode="Markdown"
+                        )
+
                     r["sent"].append(step)
                     save_reminders(REMINDERS)
                 except:
