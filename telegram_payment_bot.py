@@ -1,4 +1,4 @@
-
+                             
 """
 Telegram Payment Bot (single-file)
 UPGRADED: UPI uses Smart Dynamic QR (Auto-Approve).
@@ -226,10 +226,43 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text,
         reply_markup=main_keyboard(),
     )
+async def cleanup_previous_pending_payments(user_id, context):
+    for p in DB["payments"]:
+        if p["user_id"] == user_id and p["status"] == "pending":
+
+            # stop countdown
+            task = COUNTDOWN_TASKS.get(p["payment_id"])
+            if task:
+                task.cancel()
+                COUNTDOWN_TASKS.pop(p["payment_id"], None)
+
+            # delete payment message
+            try:
+                if p.get("chat_id") and p.get("message_id"):
+                    await context.bot.delete_message(
+                        p["chat_id"], p["message_id"]
+                    )
+            except:
+                pass
+
+            # delete loading messages
+            try:
+                for mid in p.get("loading_msg_ids", []):
+                    await context.bot.delete_message(user_id, mid)
+            except:
+                pass
+
+            # expire payment
+            p["status"] = "expired"
+
+    save_db(DB)
 
 
 async def handle_payment(method, package, query, context, from_reminder=False):
     user = query.from_user
+    
+    # 🔥 CLEAN ALL PREVIOUS PENDING PAYMENTS (QR / MANUAL / COUNTDOWN)
+    await cleanup_previous_pending_payments(user.id, context)
 
     entry = {
         "payment_id": f"p_{int(time.time()*1000)}",
@@ -241,11 +274,7 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         "created_at": int(time.time()),
         "from_reminder": from_reminder,
     }
-    # Expire any previous pending payment for this user
-    for p in DB["payments"]:
-        if p["user_id"] == user.id and p["status"] == "pending":
-            p["status"] = "expired"
-    save_db(DB)
+    
 
 
     # ---------- UPI ----------
@@ -261,18 +290,6 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             return
 
         entry["razorpay_qr_id"] = qr_resp["id"]
-
-        clear_user_reminders(user.id)
-        REMINDERS.append({
-            "user_id": user.id,
-            "package": package,
-            "intent": "upi_clicked",
-            "created_at": int(time.time()),
-            "sent": [],
-            "touched": False,
-            "clicked_from_reminder": from_reminder
-        })
-        save_reminders(REMINDERS)
 
         DB["payments"].append(entry)
         save_db(DB)
@@ -302,18 +319,6 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         return
 
     # ---------- MANUAL ----------
-    clear_user_reminders(user.id)
-    REMINDERS.append({
-        "user_id": user.id,
-        "package": package,
-        "intent": "manual_clicked",
-        "created_at": int(time.time()),
-        "sent": [],
-        "touched": False,
-        "clicked_from_reminder": from_reminder
-    })
-    save_reminders(REMINDERS)
-
     DB["payments"].append(entry)
     save_db(DB)
 
@@ -350,6 +355,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ----- PACKAGE SELECTION -----
     if data.startswith("choose_"):
+        # 🔥 CLEAN OLD PENDING PAYMENTS WHEN SWITCHING PACKAGE
+        await cleanup_previous_pending_payments(user.id, context)
+
         # 🚫 BLOCK IF USER ALREADY PAID FOR THIS PACKAGE
         package = data.split("_")[1]
 
@@ -401,7 +409,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ----- CANCEL -----
     if data == "cancel":
         clear_user_reminders(user.id)
-
         # stop countdowns & clean messages
         for p in DB["payments"]:
             if p["user_id"] == user.id and p["status"] == "pending":
@@ -420,6 +427,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                 except:
                     pass
+                # delete loading messages (Creating QR / Sending QR)
+                try:
+                    for mid in p.get("loading_msg_ids", []):
+                        await context.bot.delete_message(user.id, mid)
+                except:
+                    pass
+
 
                 # mark payment as cancelled
                 p["status"] = "expired"
@@ -441,6 +455,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for r in REMINDERS:
             if r["user_id"] == user.id:
                 r["clicked_from_reminder"] = True
+                r["intent"] = "upi_clicked" if method == "upi" else "manual_clicked"
                 save_reminders(REMINDERS)
                 break
 
@@ -457,6 +472,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("pay_"):
         method, package = data.split(":")
         method = method.replace("pay_", "")
+        for r in REMINDERS:
+            if r["user_id"] == user.id:
+                r["intent"] = "upi_clicked" if method == "upi" else "manual_clicked"
+                save_reminders(REMINDERS)
+                break
 
         return await handle_payment(
             method=method,
@@ -1511,4 +1531,4 @@ application.add_handler(
     )
 )
 
-application.run_polling()
+application.run_polling()                                                                                                                                 
