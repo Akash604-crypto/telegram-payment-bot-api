@@ -175,7 +175,7 @@ def razorpay_qr_footer_branding(razorpay_qr_url, out_path):
 
     # ✅ Push logo UP so name is fully hidden
     lx = (w - logo.width) // 2
-    ly = footer_top + 2   # ⬅ moved UP (was +5)
+    ly = footer_top - 8   # ⬅ moved UP (was +5)
 
     canvas.paste(logo, (lx, ly), logo)
 
