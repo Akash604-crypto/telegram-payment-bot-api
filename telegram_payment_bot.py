@@ -13,6 +13,7 @@ import hmac
 import hashlib
 import threading
 import asyncio
+from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageChops
 from typing import Dict, Any
 from pathlib import Path
@@ -136,6 +137,52 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
     except Exception as e:
         print(f"QR Error: {e}")
         return None
+
+def create_branded_qr_wrapper(razorpay_qr_url, amount, package, out_path):
+    bg = Image.open("assets/payment_bg_1080.png").convert("RGBA")
+    draw = ImageDraw.Draw(bg)
+
+    bg_w, bg_h = bg.size  # should be 1080x1080
+
+    # Fetch Razorpay QR
+    r = requests.get(razorpay_qr_url, timeout=15)
+    r.raise_for_status()
+    qr = Image.open(BytesIO(r.content)).convert("RGBA")
+
+    # Resize QR safely
+    qr_size = 420
+    qr.thumbnail((qr_size, qr_size), Image.LANCZOS)
+    qr_w, qr_h = qr.size
+
+    qr_x = (bg_w - qr_w) // 2
+    qr_y = 320
+
+    # White Plate (quiet zone)
+    pad = 30
+    draw.rectangle(
+        [qr_x - pad, qr_y - pad, qr_x + qr_w + pad, qr_y + qr_h + pad],
+        fill="white"
+    )
+
+    bg.paste(qr, (qr_x, qr_y), qr)
+
+    # Optional text (safe even if font missing)
+    try:
+        font_big = ImageFont.truetype("arial.ttf", 48)
+        font_small = ImageFont.truetype("arial.ttf", 28)
+    except:
+        font_big = font_small = ImageFont.load_default()
+
+    draw.text((bg_w//2, 200), f"SCAN & PAY ₹{amount}", fill="#111",
+              font=font_big, anchor="mm")
+    draw.text((bg_w//2, 820), f"Package: {package.upper()}",
+              fill="#333", font=font_small, anchor="mm")
+    draw.text((bg_w//2, 920), "Auto-activates in 60s",
+              fill="#666", font=font_small, anchor="mm")
+
+    bg.save(out_path, "PNG", optimize=True)
+    return out_path
+
 
 # -------------------- Bot Handlers --------------------
 def conversion_stats(days=None):
@@ -302,11 +349,26 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             f"• Do NOT send screenshot\n"
         )
 
-        qr_msg = await query.message.reply_photo(
-            photo=qr_resp["image_url"],
-            caption=caption_text,
-            parse_mode="Markdown"
+        tmp_path = DATA_DIR / f"qr_{entry['payment_id']}.png"
+
+        create_branded_qr_wrapper(
+            razorpay_qr_url=qr_resp["image_url"],
+            amount=amount,
+            package=package,
+            out_path=tmp_path
         )
+
+       try:
+         with open(tmp_path, "rb") as img:
+             qr_msg = await query.message.reply_photo(
+                 photo=img,
+                 caption=caption_text,
+                 parse_mode="Markdown"
+             )
+       finally:
+          if tmp_path.exists():
+              tmp_path.unlink()
+
 
         entry["caption_text"] = caption_text
         entry["chat_id"] = qr_msg.chat.id
