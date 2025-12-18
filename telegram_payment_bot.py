@@ -369,11 +369,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ):
             # ✅ SAFE to clear reminders here
             clear_user_reminders(user.id)
-            await query.message.reply_text(
-                "✅ You already have access to this package.\n\n"
-                "No payment is required.\n"
-                "Your access has been restored below 👇"
-            )
+  
             await send_link_to_user(user.id, package)
             return
 
