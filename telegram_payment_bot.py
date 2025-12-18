@@ -141,33 +141,39 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
 def razorpay_qr_footer_branding(razorpay_qr_url, out_path):
     r = requests.get(razorpay_qr_url, timeout=15)
     r.raise_for_status()
-    qr_img = Image.open(BytesIO(r.content)).convert("RGBA")
+    img = Image.open(BytesIO(r.content)).convert("RGBA")
 
-    w, h = qr_img.size
+    w, h = img.size
     canvas = Image.new("RGBA", (w, h), "white")
-    canvas.paste(qr_img, (0, 0), qr_img)
+    canvas.paste(img, (0, 0), img)
 
     draw = ImageDraw.Draw(canvas)
 
-    # ── FOOTER MASK (DO NOT TOUCH QR)
+    # ------------------ SAFE TOP CROP ------------------
+    # Razorpay QR block usually starts ~22–25% from top
+    SAFE_TOP_CROP = int(h * 0.20)   # ✅ tested safe
+
+    # ------------------ FOOTER MASK ------------------
     footer_height = int(h * 0.17)
     footer_top = h - footer_height
-
     draw.rectangle([0, footer_top, w, h], fill="white")
 
-    # ── LOGO
+    # ------------------ LOGO ------------------
     logo_path = Path("assets/technova_logo.png")
     if logo_path.exists():
         logo = Image.open(logo_path).convert("RGBA")
         logo.thumbnail((int(w * 0.42), footer_height - 10), Image.LANCZOS)
 
         lx = (w - logo.width) // 2
-        ly = footer_top - 12   # ← FINAL PERFECT POSITION
+        ly = footer_top - 8
         canvas.paste(logo, (lx, ly), logo)
 
-        # ── SAFE CROP (ONLY BELOW LOGO)
-        crop_bottom = ly + logo.height + 12
-        canvas = canvas.crop((0, 0, w, crop_bottom))
+        crop_bottom = ly + logo.height + 17
+    else:
+        crop_bottom = footer_top
+
+    # ------------------ FINAL CROP ------------------
+    canvas = canvas.crop((0, SAFE_TOP_CROP, w, crop_bottom))
 
     canvas.save(out_path, "PNG", optimize=True)
     return out_path
