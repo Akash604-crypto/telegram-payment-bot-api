@@ -144,40 +144,30 @@ def razorpay_qr_footer_branding(razorpay_qr_url, out_path):
     qr_img = Image.open(BytesIO(r.content)).convert("RGBA")
 
     w, h = qr_img.size
-
-    # Same-size canvas (QR untouched)
     canvas = Image.new("RGBA", (w, h), "white")
     canvas.paste(qr_img, (0, 0), qr_img)
 
     draw = ImageDraw.Draw(canvas)
 
-    # ✅ Slightly higher footer mask (safe zone)
-    footer_height = int(h * 0.17)   # ⬅ increased from 0.14
+    # ── FOOTER MASK (DO NOT TOUCH QR)
+    footer_height = int(h * 0.17)
     footer_top = h - footer_height
 
-    # Mask ONLY footer text area
-    draw.rectangle(
-        [0, footer_top, w, h],
-        fill="white"
-    )
+    draw.rectangle([0, footer_top, w, h], fill="white")
 
-    # Load Technova logo
+    # ── LOGO
     logo_path = Path("assets/technova_logo.png")
-    if not logo_path.exists():
-        canvas.save(out_path, "PNG", optimize=True)
-        return out_path
+    if logo_path.exists():
+        logo = Image.open(logo_path).convert("RGBA")
+        logo.thumbnail((int(w * 0.42), footer_height - 10), Image.LANCZOS)
 
-    logo = Image.open(logo_path).convert("RGBA")
+        lx = (w - logo.width) // 2
+        ly = footer_top - 12   # ← FINAL PERFECT POSITION
+        canvas.paste(logo, (lx, ly), logo)
 
-
-    # Logo size tuned for Razorpay QR
-    logo.thumbnail((int(w * 0.42), footer_height - 12), Image.LANCZOS)
-
-    # ✅ Push logo UP so name is fully hidden
-    lx = (w - logo.width) // 2
-    ly = footer_top - 8   # ⬅ moved UP (was +5)
-
-    canvas.paste(logo, (lx, ly), logo)
+        # ── SAFE CROP (ONLY BELOW LOGO)
+        crop_bottom = ly + logo.height + 12
+        canvas = canvas.crop((0, 0, w, crop_bottom))
 
     canvas.save(out_path, "PNG", optimize=True)
     return out_path
