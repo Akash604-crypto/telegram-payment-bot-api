@@ -150,7 +150,7 @@ def create_branded_qr_wrapper(razorpay_qr_url, amount, package, out_path):
     qr = Image.open(BytesIO(r.content)).convert("RGBA")
 
     # Resize QR safely
-    qr_size = 420
+    qr_size = 460
     qr.thumbnail((qr_size, qr_size), Image.LANCZOS)
     qr_w, qr_h = qr.size
 
@@ -158,7 +158,7 @@ def create_branded_qr_wrapper(razorpay_qr_url, amount, package, out_path):
     qr_y = 320
 
     # White Plate (quiet zone)
-    pad = 30
+    pad = 25
     draw.rectangle(
         [qr_x - pad, qr_y - pad, qr_x + qr_w + pad, qr_y + qr_h + pad],
         fill="white"
