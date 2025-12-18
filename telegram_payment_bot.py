@@ -883,7 +883,6 @@ async def send_link_to_user(user_id: int, package: str):
         await app_instance.bot.send_message(
             chat_id=user_id,
             text=text,
-            parse_mode="Markdown"
         )
         return
 
