@@ -868,14 +868,20 @@ async def admin_review_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def send_link_to_user(user_id: int, package: str):
     if package == "both":
-        vip_link = SETTINGS["links"].get("vip", "VIP link not set.")
-        dark_link = SETTINGS["links"].get("dark", "DARK link not set.")
+        vip_link = SETTINGS["links"].get("vip")
+        dark_link = SETTINGS["links"].get("dark")
+
+        # ✅ handle empty or missing links safely
+        if not vip_link:
+            vip_link = "VIP link not set. Contact admin."
+        if not dark_link:
+            dark_link = "DARK link not set. Contact admin."
 
         text = (
             "🎉 **Access Granted: BOTH Package**\n\n"
-            "Here are your links:\n"
+            "Here are your links:\n\n"
             f"🔹 **VIP Access:**\n{vip_link}\n\n"
-            f"🔹 **DARK Access:**\n{dark_link}\n"
+            f"🔹 **DARK Access:**\n{dark_link}"
         )
 
         await app_instance.bot.send_message(
@@ -885,12 +891,16 @@ async def send_link_to_user(user_id: int, package: str):
         )
         return
 
-    # Normal single package case
-    link = SETTINGS["links"].get(package, "Link not set. Contact admin.")
+    # ✅ Normal single package (VIP or DARK)
+    link = SETTINGS["links"].get(package)
+    if not link:
+        link = "Link not set. Contact admin."
+
     await app_instance.bot.send_message(
         chat_id=user_id,
         text=f"✅ Access Granted ({package.upper()}):\n{link}"
     )
+
 
 
 def build_manual_payment_text(package, method):
