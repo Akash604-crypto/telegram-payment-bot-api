@@ -358,16 +358,17 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             out_path=tmp_path
         )
 
-       try:
-         with open(tmp_path, "rb") as img:
-             qr_msg = await query.message.reply_photo(
-                 photo=img,
-                 caption=caption_text,
-                 parse_mode="Markdown"
-             )
-       finally:
-          if tmp_path.exists():
-              tmp_path.unlink()
+        try:
+            with open(tmp_path, "rb") as img:
+                qr_msg = await query.message.reply_photo(
+                    photo=img,
+                    caption=caption_text,
+                    parse_mode="Markdown"
+                )
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
+
 
 
         entry["caption_text"] = caption_text
