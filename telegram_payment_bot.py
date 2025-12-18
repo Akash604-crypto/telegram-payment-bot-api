@@ -138,6 +138,49 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
         print(f"QR Error: {e}")
         return None
 
+def razorpay_qr_footer_branding(razorpay_qr_url, out_path):
+    r = requests.get(razorpay_qr_url, timeout=15)
+    r.raise_for_status()
+    qr_img = Image.open(BytesIO(r.content)).convert("RGBA")
+
+    w, h = qr_img.size
+
+    # Same-size canvas (QR untouched)
+    canvas = Image.new("RGBA", (w, h), "white")
+    canvas.paste(qr_img, (0, 0), qr_img)
+
+    draw = ImageDraw.Draw(canvas)
+
+    # ✅ Slightly higher footer mask (safe zone)
+    footer_height = int(h * 0.17)   # ⬅ increased from 0.14
+    footer_top = h - footer_height
+
+    # Mask ONLY footer text area
+    draw.rectangle(
+        [0, footer_top, w, h],
+        fill="white"
+    )
+
+    # Load Technova logo
+    logo_path = Path("assets/technova_logo.png")
+    if not logo_path.exists():
+        canvas.save(out_path, "PNG", optimize=True)
+        return out_path
+
+    logo = Image.open(logo_path).convert("RGBA")
+
+
+    # Logo size tuned for Razorpay QR
+    logo.thumbnail((int(w * 0.42), footer_height - 12), Image.LANCZOS)
+
+    # ✅ Push logo UP so name is fully hidden
+    lx = (w - logo.width) // 2
+    ly = footer_top + 2   # ⬅ moved UP (was +5)
+
+    canvas.paste(logo, (lx, ly), logo)
+
+    canvas.save(out_path, "PNG", optimize=True)
+    return out_path
 
 # -------------------- Bot Handlers --------------------
 def conversion_stats(days=None):
@@ -304,7 +347,8 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             f"• Do NOT send screenshot\n"
         )
 
-        tmp_path = DATA_DIR / f"qr_{entry['payment_id']}.png"
+        tmp_path = DATA_DIR / f"qr_{entry['payment_id']}_{user.id}.png"
+
 
         razorpay_qr_footer_branding(
             razorpay_qr_url=qr_resp["image_url"],
@@ -499,41 +543,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-def razorpay_qr_footer_branding(razorpay_qr_url, out_path):
-    # Fetch original Razorpay QR (UNCHANGED)
-    r = requests.get(razorpay_qr_url, timeout=15)
-    r.raise_for_status()
-    qr_img = Image.open(BytesIO(r.content)).convert("RGBA")
-
-    w, h = qr_img.size
-
-    # Create same-size canvas
-    canvas = Image.new("RGBA", (w, h), "white")
-    canvas.paste(qr_img, (0, 0), qr_img)
-
-    draw = ImageDraw.Draw(canvas)
-
-    # Razorpay footer = bottom ~12% (safe)
-    footer_height = int(h * 0.12)
-    footer_top = h - footer_height
-
-    # Mask ONLY footer (name area)
-    draw.rectangle(
-        [0, footer_top, w, h],
-        fill="white"
-    )
-
-    # Load Technova logo
-    logo = Image.open("assets/technova_logo.png").convert("RGBA")
-    logo.thumbnail((int(w * 0.45), footer_height - 10), Image.LANCZOS)
-
-    lx = (w - logo.width) // 2
-    ly = footer_top + (footer_height - logo.height) // 2
-
-    canvas.paste(logo, (lx, ly), logo)
-
-    canvas.save(out_path, "PNG", optimize=True)
-    return out_path
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
