@@ -1293,12 +1293,23 @@ async def broadcast_to_users(bot, user_ids, update, context):
 
 
 
-            # TEXT
+            
+            # TEXT (preserve new lines)
             else:
-                text = " ".join(context.args)
+                text = update.message.text
                 if not text:
                     continue
-                await bot.send_message(uid, text, parse_mode="Markdown")
+
+                # remove only the broadcast command
+                text = (
+                    text.replace("/broadcast_all", "")
+                        .replace("/broadcast_buyers", "")
+                        .replace("/broadcast_nonbuyers", "")
+                        .strip()
+                )
+
+                await bot.send_message(uid, text)
+
 
             delivered += 1
             await asyncio.sleep(0.05)
