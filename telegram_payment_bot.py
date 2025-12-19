@@ -7,6 +7,7 @@ MANUAL: Crypto & Remitly still require Admin Approval.
 
 import os
 import base64
+import aiohttp
 import json
 import time
 import hmac
@@ -138,31 +139,28 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
         print(f"QR Error: {e}")
         return None
 
-def razorpay_qr_footer_branding_bytes(razorpay_qr_url):
-    r = requests.get(razorpay_qr_url, timeout=10)
-    r.raise_for_status()
 
-    img = Image.open(BytesIO(r.content)).convert("RGB")
+
+async def fetch_qr_image_bytes(url: str) -> bytes:
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            resp.raise_for_status()
+            return await resp.read()
+
+def crop_qr_bytes(data: bytes) -> BytesIO:
+    img = Image.open(BytesIO(data)).convert("RGB")
     w, h = img.size
 
-    # 🔐 SAME SAFE CROP (UNCHANGED LOGIC)
+    # 🔐 MANDATORY SAFE CROP (UNCHANGED)
     SAFE_TOP_CROP = int(h * 0.20)
     SAFE_BOTTOM_CROP = int(h * 0.20)
 
-    cropped = img.crop((
-        0,
-        SAFE_TOP_CROP,
-        w,
-        h - SAFE_BOTTOM_CROP
-    ))
+    cropped = img.crop((0, SAFE_TOP_CROP, w, h - SAFE_BOTTOM_CROP))
 
-    # ⚡ FAST: JPEG + MEMORY (NO DISK)
     bio = BytesIO()
     cropped.save(bio, format="JPEG", quality=88)
     bio.seek(0)
     return bio
-
-
 
 # -------------------- Bot Handlers --------------------
 def conversion_stats(days=None):
@@ -337,11 +335,16 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             f"• Do NOT send screenshot\n"
         )
 
+        # 🔥 async download (non-blocking)
+        qr_raw = await fetch_qr_image_bytes(qr_resp["image_url"])
+
+        # 🧠 mandatory crop (executor)
         qr_bytes = await loop.run_in_executor(
-            None,
-            razorpay_qr_footer_branding_bytes,
-            qr_resp["image_url"]
+           None,
+           crop_qr_bytes,
+           qr_raw
         )
+
 
 
         qr_msg = await query.message.reply_photo(
