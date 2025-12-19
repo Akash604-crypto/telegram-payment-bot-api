@@ -138,18 +138,17 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
         print(f"QR Error: {e}")
         return None
 
-def razorpay_qr_footer_branding(razorpay_qr_url, out_path):
-    r = requests.get(razorpay_qr_url, timeout=15)
+def razorpay_qr_footer_branding_bytes(razorpay_qr_url):
+    r = requests.get(razorpay_qr_url, timeout=10)
     r.raise_for_status()
-    img = Image.open(BytesIO(r.content)).convert("RGBA")
 
+    img = Image.open(BytesIO(r.content)).convert("RGB")
     w, h = img.size
 
-    # 🔐 SAFE CROP LIMITS
-    SAFE_TOP_CROP = int(h * 0.20)      # removes Powered by Razorpay / extra space
-    SAFE_BOTTOM_CROP = int(h * 0.20)   # removes name / footer text
+    # 🔐 SAME SAFE CROP (UNCHANGED LOGIC)
+    SAFE_TOP_CROP = int(h * 0.20)
+    SAFE_BOTTOM_CROP = int(h * 0.20)
 
-    # 🔥 FINAL CROP (QR untouched)
     cropped = img.crop((
         0,
         SAFE_TOP_CROP,
@@ -157,8 +156,12 @@ def razorpay_qr_footer_branding(razorpay_qr_url, out_path):
         h - SAFE_BOTTOM_CROP
     ))
 
-    cropped.save(out_path, "PNG", optimize=True)
-    return out_path
+    # ⚡ FAST: JPEG + MEMORY (NO DISK)
+    bio = BytesIO()
+    cropped.save(bio, format="JPEG", quality=88)
+    bio.seek(0)
+    return bio
+
 
 
 # -------------------- Bot Handlers --------------------
@@ -305,10 +308,18 @@ async def handle_payment(method, package, query, context, from_reminder=False):
     if method == "upi":
         amount = SETTINGS["prices"][package]["upi"]
 
-        msg1 = await query.message.reply_text("⏳ Creating QR code...")
+        msg1 = await query.message.reply_text("⚡ Generating UPI QR…")
         entry["loading_msg_ids"] = [msg1.message_id]
 
-        qr_resp = create_razorpay_smart_qr(amount, user.id, package)
+        loop = asyncio.get_running_loop()
+        qr_resp = await loop.run_in_executor(
+            None,
+            create_razorpay_smart_qr,
+            amount,
+            user.id,
+            package
+        )
+
         if not qr_resp:
             await msg1.edit_text("❌ System Busy. Try again later.")
             return
@@ -318,7 +329,7 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         DB["payments"].append(entry)
         save_db(DB)
 
-        await msg1.edit_text("📤 Sending QR code...")
+        await msg1.edit_text("⚡ QR ready, sending…")
 
         caption_text = (
             f"✅ **SCAN & PAY ₹{amount}**\n"
@@ -326,24 +337,19 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             f"• Do NOT send screenshot\n"
         )
 
-        tmp_path = DATA_DIR / f"qr_{entry['payment_id']}_{user.id}.png"
-
-
-        razorpay_qr_footer_branding(
-            razorpay_qr_url=qr_resp["image_url"],
-            out_path=tmp_path
+        qr_bytes = await loop.run_in_executor(
+            None,
+            razorpay_qr_footer_branding_bytes,
+            qr_resp["image_url"]
         )
 
-        try:
-            with open(tmp_path, "rb") as img:
-                qr_msg = await query.message.reply_photo(
-                    photo=img,
-                    caption=caption_text,
-                    parse_mode="Markdown"
-                )
-        finally:
-            if tmp_path.exists():
-                tmp_path.unlink()
+
+        qr_msg = await query.message.reply_photo(
+            photo=qr_bytes,
+            caption=caption_text,
+            parse_mode="Markdown"
+        )
+
 
 
 
@@ -1084,8 +1090,8 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
         except:
             pass
 
-        await asyncio.sleep(5)
-        seconds -= 5
+        await asyncio.sleep(10)
+        seconds -= 10
 
 
     # TIMEOUT HANDLING
