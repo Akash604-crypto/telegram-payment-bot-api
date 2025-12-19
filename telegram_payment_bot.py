@@ -281,6 +281,14 @@ async def cleanup_previous_pending_payments(user_id, context):
             p["status"] = "expired"
 
     save_db(DB)
+    
+
+async def update_progress(msg, text, bar):
+    try:
+        await msg.edit_text(f"{text}\n{bar}")
+    except:
+        pass
+
 
 
 async def handle_payment(method, package, query, context, from_reminder=False):
@@ -306,10 +314,18 @@ async def handle_payment(method, package, query, context, from_reminder=False):
     if method == "upi":
         amount = SETTINGS["prices"][package]["upi"]
 
-        msg1 = await query.message.reply_text("⚡ Generating UPI QR…")
+        msg1 = await query.message.reply_text(
+            "⚡ Initializing secure UPI…\n▰▱▱▱▱"
+        )
         entry["loading_msg_ids"] = [msg1.message_id]
 
         loop = asyncio.get_running_loop()
+        await update_progress(
+            msg1,
+            "🔐 Connecting to Razorpay…",
+            "▰▰▱▱▱"
+        )
+
         qr_resp = await loop.run_in_executor(
             None,
             create_razorpay_smart_qr,
@@ -323,11 +339,22 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             return
 
         entry["razorpay_qr_id"] = qr_resp["id"]
+        await update_progress(
+            msg1,
+            "🖼 Preparing QR…",
+            "▰▰▰▰▱"
+        )
+
 
         DB["payments"].append(entry)
         save_db(DB)
 
-        await msg1.edit_text("⚡ QR ready, sending…")
+        await update_progress(
+            msg1,
+            "✅ QR ready! Sending now…",
+            "▰▰▰▰▰"
+        )
+
 
         caption_text = (
             f"✅ **SCAN & PAY ₹{amount}**\n"
