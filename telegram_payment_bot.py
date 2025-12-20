@@ -10,6 +10,7 @@ import base64
 import aiohttp
 import json
 import time
+import concurrent.futures
 import hmac
 import hashlib
 import threading
@@ -44,8 +45,8 @@ DB_FILE = DATA_DIR / "payments.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 USERS_FILE = DATA_DIR / "users.json"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
-
-
+AIOHTTP_SESSION = None
+EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 
 
 DEFAULT_SETTINGS = {
@@ -132,7 +133,7 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
         }
     }
     try:
-        r = requests.post(url, auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET), json=payload, timeout=20)
+        r = requests.post(url, auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET), json=payload, timeout=(5, 15))
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -142,10 +143,13 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
 
 
 async def fetch_qr_image_bytes(url: str) -> bytes:
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            resp.raise_for_status()
-            return await resp.read()
+    if not AIOHTTP_SESSION:
+        raise RuntimeError("HTTP session not initialized")
+    async with AIOHTTP_SESSION.get(url) as resp:
+        resp.raise_for_status()
+        return await resp.read()
+
+
 
 def crop_qr_bytes(data: bytes) -> BytesIO:
     img = Image.open(BytesIO(data)).convert("RGB")
@@ -327,12 +331,13 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         )
 
         qr_resp = await loop.run_in_executor(
-            None,
+            EXECUTOR,
             create_razorpay_smart_qr,
             amount,
             user.id,
             package
         )
+
 
         if not qr_resp:
             await msg1.edit_text("❌ System Busy. Try again later.")
@@ -346,8 +351,7 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         )
 
 
-        DB["payments"].append(entry)
-        save_db(DB)
+       
 
         await update_progress(
             msg1,
@@ -367,10 +371,11 @@ async def handle_payment(method, package, query, context, from_reminder=False):
 
         # 🧠 mandatory crop (executor)
         qr_bytes = await loop.run_in_executor(
-           None,
+           EXECUTOR,
            crop_qr_bytes,
            qr_raw
         )
+
 
 
 
@@ -380,7 +385,8 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             parse_mode="Markdown"
         )
 
-
+        DB["payments"].append(entry)
+        save_db(DB)
 
 
         entry["caption_text"] = caption_text
@@ -704,6 +710,11 @@ async def stats_cmd_from_button(query, context):
     )
 
     await query.message.reply_text(text, parse_mode="Markdown")
+
+async def shutdown(application):
+    global AIOHTTP_SESSION
+    if AIOHTTP_SESSION:
+        await AIOHTTP_SESSION.close()
 
 async def adminpanel_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1147,9 +1158,11 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
 
 
 async def post_init(application):
-    global BOT_LOOP
+    global BOT_LOOP, AIOHTTP_SESSION
     BOT_LOOP = asyncio.get_running_loop()
+    AIOHTTP_SESSION = aiohttp.ClientSession()
     asyncio.create_task(reminder_loop())
+
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
@@ -1539,7 +1552,14 @@ async def reminder_loop():
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+    application = (
+        ApplicationBuilder()
+        .token(TELEGRAM_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(shutdown)
+        .build()
+    )
+
     app_instance = application
 
     # USER COMMANDS
