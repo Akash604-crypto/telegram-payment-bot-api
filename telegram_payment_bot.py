@@ -164,7 +164,7 @@ def crop_qr_bytes(data: bytes) -> BytesIO:
     cropped = img.crop((0, SAFE_TOP_CROP, w, h - SAFE_BOTTOM_CROP))
 
     bio = BytesIO()
-    cropped.save(bio, format="JPEG", quality=88)
+    cropped.save(bio, format="JPEG", quality=80, optimize=True)
     bio.seek(0)
     return bio
 
@@ -1570,6 +1570,10 @@ if __name__ == "__main__":
     application = (
         ApplicationBuilder()
         .token(TELEGRAM_TOKEN)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
         .post_init(post_init)
         .post_shutdown(shutdown)
         .build()
