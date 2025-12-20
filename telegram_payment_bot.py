@@ -6,17 +6,16 @@ MANUAL: Crypto & Remitly still require Admin Approval.
 """
 
 import os
-import qrcode
+import base64
+import aiohttp
 import json
 import time
-import aiohttp
-import concurrent.futures
 import hmac
 import hashlib
 import threading
-import datetime
 import asyncio
 from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont, ImageChops
 from typing import Dict, Any
 from pathlib import Path
 import sys
@@ -45,8 +44,7 @@ DB_FILE = DATA_DIR / "payments.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 USERS_FILE = DATA_DIR / "users.json"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
-AIOHTTP_SESSION = None
-EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+
 
 
 
@@ -59,11 +57,7 @@ DEFAULT_SETTINGS = {
     },
     "links": {"vip": "", "dark": "", "both": ""},
     "payment_info": {
-        "upi_id": os.environ.get(
-            "UPI_ID",
-            "technovastore641100.rzp@icici"
-        ),
-
+        "upi_id": os.environ.get("UPI_ID", "govindmahto21@axl"),
         "crypto_address": os.environ.get("CRYPTO_ADDRESS", "0xfc14846229f375124d8fed5cd9a789a271a303f5"),
         "crypto_network": os.environ.get("CRYPTO_NETWORK", "BEP20"),
         "remitly_info": os.environ.get(
@@ -81,8 +75,6 @@ RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
 
 BOT_LOOP = None
 
-def tlog(label, start):
-    print(f"[TIMING] {label}: {time.time() - start:.3f}s")
 
 def load_users():
     if USERS_FILE.exists():
@@ -140,7 +132,7 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
         }
     }
     try:
-        r = requests.post(url, auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET), json=payload, timeout=(5, 15))
+        r = requests.post(url, auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET), json=payload, timeout=20)
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -148,6 +140,27 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
         return None
 
 
+
+async def fetch_qr_image_bytes(url: str) -> bytes:
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            resp.raise_for_status()
+            return await resp.read()
+
+def crop_qr_bytes(data: bytes) -> BytesIO:
+    img = Image.open(BytesIO(data)).convert("RGB")
+    w, h = img.size
+
+    # 🔐 MANDATORY SAFE CROP (UNCHANGED)
+    SAFE_TOP_CROP = int(h * 0.20)
+    SAFE_BOTTOM_CROP = int(h * 0.20)
+
+    cropped = img.crop((0, SAFE_TOP_CROP, w, h - SAFE_BOTTOM_CROP))
+
+    bio = BytesIO()
+    cropped.save(bio, format="JPEG", quality=88)
+    bio.seek(0)
+    return bio
 
 # -------------------- Bot Handlers --------------------
 def conversion_stats(days=None):
@@ -168,12 +181,7 @@ def conversion_stats(days=None):
         if days is None:
             return True
         if days == 0:
-            today_start = int(
-                datetime.datetime.combine(
-                    datetime.date.today(),
-                    datetime.time.min
-                ).timestamp()
-            )
+            today_start = int(time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1)))
             return p["created_at"] >= today_start
 
         return p["created_at"] >= now - days * 86400
@@ -220,24 +228,7 @@ def main_keyboard():
     ]
     return InlineKeyboardMarkup(kb)
 
-def generate_qr_locally(upi_string: str) -> BytesIO:
-    qr = qrcode.QRCode(
-        version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
-        box_size=8,
-        border=2,
-    )
-    qr.add_data(upi_string)
-    qr.make(fit=True)
-
-    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-    img = img.resize((640, 640))
-    bio = BytesIO()
-    img.save(bio, format="JPEG", quality=80, optimize=True)
-    bio.seek(0)
-    return bio
-
-  
+    
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -321,7 +312,6 @@ async def handle_payment(method, package, query, context, from_reminder=False):
 
     # ---------- UPI ----------
     if method == "upi":
-        start_total = time.time()
         amount = SETTINGS["prices"][package]["upi"]
 
         msg1 = await query.message.reply_text(
@@ -336,37 +326,19 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             "▰▰▱▱▱"
         )
 
-        t_rzp = time.time()
         qr_resp = await loop.run_in_executor(
-            EXECUTOR,
+            None,
             create_razorpay_smart_qr,
             amount,
             user.id,
             package
         )
-        tlog("Razorpay QR API", t_rzp)
-
 
         if not qr_resp:
             await msg1.edit_text("❌ System Busy. Try again later.")
             return
 
         entry["razorpay_qr_id"] = qr_resp["id"]
-        # -------- BUILD UPI STRING (LOCAL QR) --------
-        upi_id = SETTINGS["payment_info"]["upi_id"]  # technovastore641100.rzp@icici
-        merchant_name = "Technova Store"
-        txn_note = f"{package.upper()} Access"
-        amount_str = f"{amount:.2f}"
-
-        upi_string = (
-            f"upi://pay?"
-            f"pa={upi_id}"
-            f"&pn={merchant_name}"
-            f"&am={amount_str}"
-            f"&cu=INR"
-            f"&tn={txn_note}"
-        )
-
         await update_progress(
             msg1,
             "🖼 Preparing QR…",
@@ -374,7 +346,8 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         )
 
 
-       
+        DB["payments"].append(entry)
+        save_db(DB)
 
         await update_progress(
             msg1,
@@ -389,35 +362,25 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             f"• Do NOT send screenshot\n"
         )
 
-        t_qr = time.time()
+        # 🔥 async download (non-blocking)
+        qr_raw = await fetch_qr_image_bytes(qr_resp["image_url"])
 
-
-
+        # 🧠 mandatory crop (executor)
         qr_bytes = await loop.run_in_executor(
-            EXECUTOR,
-            generate_qr_locally,
-            upi_string
+           None,
+           crop_qr_bytes,
+           qr_raw
         )
 
-        tlog("Local QR generation", t_qr)
 
 
-
-
-
-
-        t_tg = time.time()
         qr_msg = await query.message.reply_photo(
             photo=qr_bytes,
             caption=caption_text,
             parse_mode="Markdown"
         )
-        tlog("Telegram photo upload", t_tg)
-        tlog("TOTAL UPI FLOW", start_total)
 
 
-        DB["payments"].append(entry)
-        save_db(DB)
 
 
         entry["caption_text"] = caption_text
@@ -741,13 +704,6 @@ async def stats_cmd_from_button(query, context):
     )
 
     await query.message.reply_text(text, parse_mode="Markdown")
-
-async def shutdown(application):
-    global AIOHTTP_SESSION
-    if AIOHTTP_SESSION:
-        await AIOHTTP_SESSION.close()
-    EXECUTOR.shutdown(wait=False)
-
 
 async def adminpanel_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1191,11 +1147,9 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
 
 
 async def post_init(application):
-    global BOT_LOOP, AIOHTTP_SESSION
+    global BOT_LOOP
     BOT_LOOP = asyncio.get_running_loop()
-    AIOHTTP_SESSION = aiohttp.ClientSession()
     asyncio.create_task(reminder_loop())
-
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
@@ -1585,18 +1539,7 @@ async def reminder_loop():
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
-    application = (
-        ApplicationBuilder()
-        .token(TELEGRAM_TOKEN)
-        .connect_timeout(30)
-        .read_timeout(30)
-        .write_timeout(30)
-        .pool_timeout(30)
-        .post_init(post_init)
-        .post_shutdown(shutdown)
-        .build()
-    )
-
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app_instance = application
 
     # USER COMMANDS
