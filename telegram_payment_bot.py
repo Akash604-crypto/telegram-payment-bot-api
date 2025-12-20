@@ -76,6 +76,8 @@ RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
 
 BOT_LOOP = None
 
+def tlog(label, start):
+    print(f"[TIMING] {label}: {time.time() - start:.3f}s")
 
 def load_users():
     if USERS_FILE.exists():
@@ -316,6 +318,7 @@ async def handle_payment(method, package, query, context, from_reminder=False):
 
     # ---------- UPI ----------
     if method == "upi":
+        start_total = time.time()
         amount = SETTINGS["prices"][package]["upi"]
 
         msg1 = await query.message.reply_text(
@@ -330,6 +333,7 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             "▰▰▱▱▱"
         )
 
+        t_rzp = time.time()
         qr_resp = await loop.run_in_executor(
             EXECUTOR,
             create_razorpay_smart_qr,
@@ -337,6 +341,7 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             user.id,
             package
         )
+        tlog("Razorpay QR API", t_rzp)
 
 
         if not qr_resp:
@@ -367,23 +372,33 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         )
 
         # 🔥 async download (non-blocking)
+        t_dl = time.time()
         qr_raw = await fetch_qr_image_bytes(qr_resp["image_url"])
+        tlog("QR image download", t_dl)
+
 
         # 🧠 mandatory crop (executor)
+        t_crop = time.time()
         qr_bytes = await loop.run_in_executor(
            EXECUTOR,
            crop_qr_bytes,
            qr_raw
         )
+        tlog("QR crop", t_crop)
 
 
 
 
+
+        t_tg = time.time()
         qr_msg = await query.message.reply_photo(
             photo=qr_bytes,
             caption=caption_text,
             parse_mode="Markdown"
         )
+        tlog("Telegram photo upload", t_tg)
+        tlog("TOTAL UPI FLOW", start_total)
+
 
         DB["payments"].append(entry)
         save_db(DB)
