@@ -6,7 +6,7 @@ MANUAL: Crypto & Remitly still require Admin Approval.
 """
 
 import os
-import base64
+import qrcode
 import aiohttp
 import json
 import time
@@ -16,7 +16,6 @@ import hashlib
 import threading
 import asyncio
 from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont, ImageChops
 from typing import Dict, Any
 from pathlib import Path
 import sys
@@ -46,7 +45,7 @@ SETTINGS_FILE = DATA_DIR / "settings.json"
 USERS_FILE = DATA_DIR / "users.json"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
 AIOHTTP_SESSION = None
-EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 
 DEFAULT_SETTINGS = {
@@ -144,30 +143,6 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
 
 
 
-async def fetch_qr_image_bytes(url: str) -> bytes:
-    if not AIOHTTP_SESSION:
-        raise RuntimeError("HTTP session not initialized")
-    async with AIOHTTP_SESSION.get(url) as resp:
-        resp.raise_for_status()
-        return await resp.read()
-
-
-
-def crop_qr_bytes(data: bytes) -> BytesIO:
-    img = Image.open(BytesIO(data)).convert("RGB")
-    w, h = img.size
-
-    # 🔐 MANDATORY SAFE CROP (UNCHANGED)
-    SAFE_TOP_CROP = int(h * 0.20)
-    SAFE_BOTTOM_CROP = int(h * 0.20)
-
-    cropped = img.crop((0, SAFE_TOP_CROP, w, h - SAFE_BOTTOM_CROP))
-
-    bio = BytesIO()
-    cropped.save(bio, format="JPEG", quality=80, optimize=True)
-    bio.seek(0)
-    return bio
-
 # -------------------- Bot Handlers --------------------
 def conversion_stats(days=None):
     """
@@ -234,7 +209,25 @@ def main_keyboard():
     ]
     return InlineKeyboardMarkup(kb)
 
-    
+def generate_qr_locally(upi_string: str) -> BytesIO:
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=8,
+        border=2,
+    )
+    qr.add_data(upi_string)
+    qr.make(fit=True)
+
+    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    img = img.resize((720, 720))
+
+    bio = BytesIO()
+    img.save(bio, format="JPEG", quality=85, optimize=True)
+    bio.seek(0)
+    return bio
+
+  
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -371,20 +364,25 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             f"• Do NOT send screenshot\n"
         )
 
-        # 🔥 async download (non-blocking)
-        t_dl = time.time()
-        qr_raw = await fetch_qr_image_bytes(qr_resp["image_url"])
-        tlog("QR image download", t_dl)
+        t_qr = time.time()
+
+        # 🔥 get UPI string from Razorpay response
+        upi_string = qr_resp.get("qr_data")
+
+        if not upi_string:
+            print("❌ Razorpay response:", qr_resp)
+            await msg1.edit_text("❌ QR data missing. Try again later.")
+            return
 
 
-        # 🧠 mandatory crop (executor)
-        t_crop = time.time()
         qr_bytes = await loop.run_in_executor(
-           EXECUTOR,
-           crop_qr_bytes,
-           qr_raw
+            EXECUTOR,
+            generate_qr_locally,
+            upi_string
         )
-        tlog("QR crop", t_crop)
+
+        tlog("Local QR generation", t_qr)
+
 
 
 
@@ -730,6 +728,8 @@ async def shutdown(application):
     global AIOHTTP_SESSION
     if AIOHTTP_SESSION:
         await AIOHTTP_SESSION.close()
+    EXECUTOR.shutdown(wait=False)
+
 
 async def adminpanel_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
