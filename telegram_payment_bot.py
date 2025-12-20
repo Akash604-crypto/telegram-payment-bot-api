@@ -6,16 +6,16 @@ MANUAL: Crypto & Remitly still require Admin Approval.
 """
 
 import os
-import qrcode
+import base64
+import aiohttp
 import json
 import time
-import concurrent.futures
 import hmac
 import hashlib
 import threading
-import datetime
 import asyncio
 from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont, ImageChops
 from typing import Dict, Any
 from pathlib import Path
 import sys
@@ -44,8 +44,7 @@ DB_FILE = DATA_DIR / "payments.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 USERS_FILE = DATA_DIR / "users.json"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
-DB_LOCK = threading.Lock()
-EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
 
 
 
@@ -58,11 +57,7 @@ DEFAULT_SETTINGS = {
     },
     "links": {"vip": "", "dark": "", "both": ""},
     "payment_info": {
-        "upi_id": os.environ.get(
-            "UPI_ID",
-            "technovastore641100.rzp@icici"
-        ),
-
+        "upi_id": os.environ.get("UPI_ID", "govindmahto21@axl"),
         "crypto_address": os.environ.get("CRYPTO_ADDRESS", "0xfc14846229f375124d8fed5cd9a789a271a303f5"),
         "crypto_network": os.environ.get("CRYPTO_NETWORK", "BEP20"),
         "remitly_info": os.environ.get(
@@ -80,8 +75,6 @@ RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
 
 BOT_LOOP = None
 
-def tlog(label, start):
-    print(f"[TIMING] {label}: {time.time() - start:.3f}s")
 
 def load_users():
     if USERS_FILE.exists():
@@ -106,14 +99,12 @@ USERS = list(set(load_users()))
 
 
 def load_db():
-    with DB_LOCK:
-        if DB_FILE.exists():
-            return json.loads(DB_FILE.read_text())
+    if DB_FILE.exists(): return json.loads(DB_FILE.read_text())
     return {"payments": []}
 
 def save_db(db):
-    with DB_LOCK:
-        DB_FILE.write_text(json.dumps(db, indent=2))
+    DB_FILE.write_text(json.dumps(db, indent=2))
+
 def load_settings():
     if SETTINGS_FILE.exists(): return json.loads(SETTINGS_FILE.read_text())
     SETTINGS_FILE.write_text(json.dumps(DEFAULT_SETTINGS, indent=2))
@@ -124,12 +115,6 @@ def save_settings(s):
 
 DB = load_db()
 SETTINGS = load_settings()
-# ENV override safety
-SETTINGS["payment_info"]["upi_id"] = os.environ.get(
-    "UPI_ID", SETTINGS["payment_info"]["upi_id"]
-)
-save_settings(SETTINGS)
-
 
 # -------------------- Razorpay Smart QR Helper --------------------
 def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
@@ -147,7 +132,7 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
         }
     }
     try:
-        r = requests.post(url, auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET), json=payload, timeout=(5, 15))
+        r = requests.post(url, auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET), json=payload, timeout=20)
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -155,6 +140,27 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
         return None
 
 
+
+async def fetch_qr_image_bytes(url: str) -> bytes:
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            resp.raise_for_status()
+            return await resp.read()
+
+def crop_qr_bytes(data: bytes) -> BytesIO:
+    img = Image.open(BytesIO(data)).convert("RGB")
+    w, h = img.size
+
+    # 🔐 MANDATORY SAFE CROP (UNCHANGED)
+    SAFE_TOP_CROP = int(h * 0.20)
+    SAFE_BOTTOM_CROP = int(h * 0.20)
+
+    cropped = img.crop((0, SAFE_TOP_CROP, w, h - SAFE_BOTTOM_CROP))
+
+    bio = BytesIO()
+    cropped.save(bio, format="JPEG", quality=88)
+    bio.seek(0)
+    return bio
 
 # -------------------- Bot Handlers --------------------
 def conversion_stats(days=None):
@@ -175,12 +181,7 @@ def conversion_stats(days=None):
         if days is None:
             return True
         if days == 0:
-            today_start = int(
-                datetime.datetime.combine(
-                    datetime.date.today(),
-                    datetime.time.min
-                ).timestamp()
-            )
+            today_start = int(time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1)))
             return p["created_at"] >= today_start
 
         return p["created_at"] >= now - days * 86400
@@ -190,11 +191,7 @@ def conversion_stats(days=None):
         "manual": {"vip": 0, "dark": 0, "both": 0},
     }
 
-    with DB_LOCK:
-        payments = list(DB["payments"])
-
-    for p in payments:
-
+    for p in DB["payments"]:
         if not in_range(p):
             continue
 
@@ -231,24 +228,7 @@ def main_keyboard():
     ]
     return InlineKeyboardMarkup(kb)
 
-def generate_qr_locally(data: str) -> BytesIO:
-    qr = qrcode.QRCode(
-        version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_L,
-        box_size=6,
-        border=2,
-    )
-    qr.add_data(data) 
-    qr.make(fit=True)
-
-    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-    img = img.resize((640, 640))
-    bio = BytesIO()
-    img.save(bio, format="JPEG", quality=80, optimize=True)
-    bio.seek(0)
-    return bio
-
-  
+    
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -272,35 +252,36 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_keyboard(),
     )
 async def cleanup_previous_pending_payments(user_id, context):
-    to_cleanup = []
+    for p in DB["payments"]:
+        if p["user_id"] == user_id and p["status"] == "pending":
 
-    with DB_LOCK:
-        for p in DB["payments"]:
-            if p["user_id"] == user_id and p["status"] == "pending":
-                p["status"] = "expired"
-                to_cleanup.append(p)
+            # stop countdown
+            task = COUNTDOWN_TASKS.get(p["payment_id"])
+            if task:
+                task.cancel()
+                COUNTDOWN_TASKS.pop(p["payment_id"], None)
 
-        save_db(DB)
+            # delete payment message
+            try:
+                if p.get("chat_id") and p.get("message_id"):
+                    await context.bot.delete_message(
+                        p["chat_id"], p["message_id"]
+                    )
+            except:
+                pass
 
-    for p in to_cleanup:
-        task = COUNTDOWN_TASKS.get(p["payment_id"])
-        if task:
-            task.cancel()
-            COUNTDOWN_TASKS.pop(p["payment_id"], None)
+            # delete loading messages
+            try:
+                for mid in p.get("loading_msg_ids", []):
+                    await context.bot.delete_message(user_id, mid)
+            except:
+                pass
 
-        try:
-            if p.get("chat_id") and p.get("message_id"):
-                await context.bot.delete_message(p["chat_id"], p["message_id"])
-        except:
-            pass
+            # expire payment
+            p["status"] = "expired"
 
-        try:
-            for mid in p.get("loading_msg_ids", []):
-                await context.bot.delete_message(user_id, mid)
-        except:
-            pass
-
-
+    save_db(DB)
+    
 
 async def update_progress(msg, text, bar):
     try:
@@ -315,20 +296,6 @@ async def handle_payment(method, package, query, context, from_reminder=False):
     
     # 🔥 CLEAN ALL PREVIOUS PENDING PAYMENTS (QR / MANUAL / COUNTDOWN)
     await cleanup_previous_pending_payments(user.id, context)
-    now = int(time.time())
-    with DB_LOCK:
-        for p in DB["payments"]:
-            if (
-                p["user_id"] == user.id
-                and p["method"] == "upi"
-                and p["status"] == "pending"
-                and now - p["created_at"] < 30
-            ):
-                await query.message.reply_text(
-                    "⏳ You already have an active UPI QR. Please complete it."
-                )
-                return
-
 
     entry = {
         "payment_id": f"p_{int(time.time()*1000)}",
@@ -345,7 +312,6 @@ async def handle_payment(method, package, query, context, from_reminder=False):
 
     # ---------- UPI ----------
     if method == "upi":
-        start_total = time.time()
         amount = SETTINGS["prices"][package]["upi"]
 
         msg1 = await query.message.reply_text(
@@ -360,36 +326,19 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             "▰▰▱▱▱"
         )
 
-        t_rzp = time.time()
         qr_resp = await loop.run_in_executor(
-            EXECUTOR,
+            None,
             create_razorpay_smart_qr,
             amount,
             user.id,
             package
         )
-        tlog("Razorpay QR API", t_rzp)
-
 
         if not qr_resp:
             await msg1.edit_text("❌ System Busy. Try again later.")
             return
-        
-        qr_id = qr_resp.get("id")
-        if not qr_id:
-            await msg1.edit_text("❌ QR generation failed. Try again.")
-            return
 
-        entry["razorpay_qr_id"] = qr_id
-
-        qr_url = qr_resp.get("short_url") or qr_resp.get("image_url")
-        entry["razorpay_qr_url"] = qr_url
-        
-
-        if not qr_url:
-            await msg1.edit_text("❌ Failed to generate payment QR. Try again.")
-            return
-
+        entry["razorpay_qr_id"] = qr_resp["id"]
         await update_progress(
             msg1,
             "🖼 Preparing QR…",
@@ -397,7 +346,8 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         )
 
 
-       
+        DB["payments"].append(entry)
+        save_db(DB)
 
         await update_progress(
             msg1,
@@ -412,35 +362,25 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             f"• Do NOT send screenshot\n"
         )
 
-        t_qr = time.time()
+        # 🔥 async download (non-blocking)
+        qr_raw = await fetch_qr_image_bytes(qr_resp["image_url"])
 
-
-
+        # 🧠 mandatory crop (executor)
         qr_bytes = await loop.run_in_executor(
-            EXECUTOR,
-            generate_qr_locally,
-            qr_url
+           None,
+           crop_qr_bytes,
+           qr_raw
         )
 
-        tlog("Local QR generation", t_qr)
 
 
-
-
-
-
-        t_tg = time.time()
         qr_msg = await query.message.reply_photo(
             photo=qr_bytes,
             caption=caption_text,
             parse_mode="Markdown"
         )
-        tlog("Telegram photo upload", t_tg)
-        tlog("TOTAL UPI FLOW", start_total)
 
 
-        DB["payments"].append(entry)
-        save_db(DB)
 
 
         entry["caption_text"] = caption_text
@@ -627,11 +567,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # USER SENT PHOTO OR DOCUMENT
     if msg.photo or msg.document:
 
-        with DB_LOCK:
-            payments = list(DB["payments"])
-
-        for p in reversed(payments):
-
+        for p in reversed(DB["payments"]):
 
             if p["user_id"] == user_id and p["status"] == "pending" and p["method"] in ("crypto", "remitly"):
 
@@ -768,11 +704,6 @@ async def stats_cmd_from_button(query, context):
     )
 
     await query.message.reply_text(text, parse_mode="Markdown")
-
-async def shutdown(application):
-    EXECUTOR.shutdown(wait=False)
-
-
 
 async def adminpanel_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1079,6 +1010,7 @@ def build_manual_payment_text(package, method):
 @app.route('/razorpay_webhook', methods=['POST'])
 def razorpay_webhook():
 
+    # ---------------- SIGNATURE VERIFICATION ----------------
     received_sig = request.headers.get("X-Razorpay-Signature", "")
     body = request.data
 
@@ -1092,90 +1024,74 @@ def razorpay_webhook():
         print("❌ Invalid Razorpay Signature")
         return jsonify({"status": "invalid signature"}), 400
 
+    # ---------------- VALIDATED PAYLOAD ----------------
     data = request.json
 
-    if data.get("event") != "qr_code.credited":
-        return jsonify({"status": "ignored"}), 200
+    if data.get('event') == 'qr_code.credited':
+        qr_entity = data['payload']['qr_code']['entity']
+        qr_id = qr_entity['id']
+        user_id = int(qr_entity['notes']['user_id'])
+        package = qr_entity['notes']['package']
 
-    qr_entity = data["payload"]["qr_code"]["entity"]
-    qr_id = qr_entity["id"]
-
-    notes = qr_entity.get("notes", {})
-    user_id = int(notes.get("user_id", 0))
-    package = notes.get("package")
-
-    if not user_id or not package:
-        return jsonify({"status": "ignored"}), 200
-
-    matched_payment = None
-
-    with DB_LOCK:
         for p in DB["payments"]:
-            if (
-                p.get("razorpay_qr_id") == qr_id
-                and p["status"] == "pending"
-            ):
+            if p.get("razorpay_qr_id") == qr_id and p["status"] == "pending":
+                
                 p["status"] = "verified"
-                p["method"] = "upi"
-                matched_payment = p
+               
+
+                clear_user_reminders(user_id)
+                save_db(DB)
+
+                # STOP countdown if running
+                task = COUNTDOWN_TASKS.get(p["payment_id"])
+                if task:
+                    task.cancel()
+                    COUNTDOWN_TASKS.pop(p["payment_id"], None)
+
+                # SEND ACCESS LINK
+                if BOT_LOOP:
+                    asyncio.run_coroutine_threadsafe(
+                        send_link_to_user(user_id, package),
+                        BOT_LOOP
+                    )
+
+                # DELETE QR MESSAGE (main QR)
+                try:
+                    chat_id = p.get("chat_id")
+                    msg_id = p.get("message_id")
+                    if chat_id and msg_id:
+                        asyncio.run_coroutine_threadsafe(
+                            app_instance.bot.delete_message(chat_id, msg_id),
+                            BOT_LOOP
+                        )
+                except Exception as e:
+                    print("QR delete error:", e)
+
+                # DELETE loading messages ("Creating QR...", "Sending QR...")
+                try:
+                    if p.get("loading_msg_ids"):
+                        for mid in p["loading_msg_ids"]:
+                            asyncio.run_coroutine_threadsafe(
+                                app_instance.bot.delete_message(p["user_id"], mid),
+                                BOT_LOOP
+                            )
+                except Exception as e:
+                    print("Loading delete error:", e)
+
                 break
-        save_db(DB)
-
-    if not matched_payment:
-        return jsonify({"status": "ignored"}), 200
-
-    # stop countdown
-    task = COUNTDOWN_TASKS.get(matched_payment["payment_id"])
-    if task:
-        task.cancel()
-        COUNTDOWN_TASKS.pop(matched_payment["payment_id"], None)
-
-    # send access
-    if BOT_LOOP:
-        asyncio.run_coroutine_threadsafe(
-            send_link_to_user(user_id, package),
-            BOT_LOOP
-        )
-
-    # delete QR
-    try:
-        chat_id = matched_payment.get("chat_id")
-        msg_id = matched_payment.get("message_id")
-        if chat_id and msg_id:
-            asyncio.run_coroutine_threadsafe(
-                app_instance.bot.delete_message(chat_id, msg_id),
-                BOT_LOOP
-            )
-    except Exception as e:
-        print("QR delete error:", e)
-
-    # delete loading msgs
-    try:
-        for mid in matched_payment.get("loading_msg_ids", []):
-            asyncio.run_coroutine_threadsafe(
-                app_instance.bot.delete_message(matched_payment["user_id"], mid),
-                BOT_LOOP
-            )
-    except Exception as e:
-        print("Loading delete error:", e)
 
     return jsonify({"status": "ok"}), 200
-
 
 # -------------------- Startup --------------------
 async def start_countdown(payment_id: str, chat_id: int, message_id: int, seconds: int):
     global COUNTDOWN_TASKS
 
     # Find payment entry
-    with DB_LOCK:
-        p = next(
-            (x for x in DB["payments"] if x["payment_id"] == payment_id),
-            None
-        )
-
-    if not p:
+    for p in DB["payments"]:
+        if p["payment_id"] == payment_id:
+            break
+    else:
         return
-
 
     while seconds > 0:
         if p["status"] != "pending":
@@ -1204,8 +1120,8 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
         except:
             pass
 
-        await asyncio.sleep(15)
-        seconds -= 15
+        await asyncio.sleep(10)
+        seconds -= 10
 
 
     # TIMEOUT HANDLING
@@ -1234,8 +1150,6 @@ async def post_init(application):
     global BOT_LOOP
     BOT_LOOP = asyncio.get_running_loop()
     asyncio.create_task(reminder_loop())
-
-
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
@@ -1397,9 +1311,7 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_func = update.message.reply_text
 
     # Find latest payment
-    with DB_LOCK:
-        user_payments = [p for p in DB["payments"] if p["user_id"] == user_id]
-
+    user_payments = [p for p in DB["payments"] if p["user_id"] == user_id]
     if not user_payments:
         return await reply_func("❌ No payment found. Start with /start")
 
@@ -1567,15 +1479,12 @@ REMINDER_MESSAGES = {
 async def reminder_loop():
     global REMINDERS
     while True:
-        # 🔒 Take safe snapshot of payments ONCE
-        with DB_LOCK:
-            payments_snapshot = list(DB["payments"])
         for r in REMINDERS[:]:
 
             # Stop if user already paid or under review
             if any(
                 p["user_id"] == r["user_id"] and p["status"] in ("review", "verified")
-                for p in payments_snapshot
+                for p in DB["payments"]
             ):
                 clear_user_reminders(r["user_id"])
                 continue
@@ -1630,98 +1539,69 @@ async def reminder_loop():
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
+
     application = (
         ApplicationBuilder()
         .token(TELEGRAM_TOKEN)
-        .connect_timeout(30)
-        .read_timeout(30)
-        .write_timeout(30)
-        .pool_timeout(30)
         .post_init(post_init)
-        .post_shutdown(shutdown)
         .build()
     )
 
     app_instance = application
 
     # USER COMMANDS
-    application.add_handler(CommandHandler('start', start_handler))
-
-    # ADMIN COMMANDS
-    application.add_handler(CommandHandler('setlink', setlink))
-    application.add_handler(CommandHandler('setprice', setprice))
-    application.add_handler(CommandHandler('adminpanel', adminpanel)) # <-- ADDED
-    application.add_handler(CommandHandler('setremitlyhowto', setremitlyhowto))
+    application.add_handler(CommandHandler("start", start_handler))
+    application.add_handler(CommandHandler("status", status_handler))
     application.add_handler(CommandHandler("reminder_cancel", reminder_cancel))
     application.add_handler(CommandHandler("reminder_start", reminder_start))
 
+    # ADMIN COMMANDS
+    application.add_handler(CommandHandler("setlink", setlink))
+    application.add_handler(CommandHandler("setprice", setprice))
+    application.add_handler(CommandHandler("adminpanel", adminpanel))
+    application.add_handler(CommandHandler("pending", pending_cmd))
+    application.add_handler(CommandHandler("stats", stats_cmd))
+    application.add_handler(CommandHandler("broadcast_all", broadcast_all))
+    application.add_handler(CommandHandler("broadcast_buyers", broadcast_buyers))
+    application.add_handler(CommandHandler("broadcast_nonbuyers", broadcast_nonbuyers))
+    application.add_handler(CommandHandler("setremitlyhowto", setremitlyhowto))
 
-    # CALLBACK BUTTON HANDLERS
+    # CALLBACKS
     application.add_handler(
         CallbackQueryHandler(
             callback_handler,
             pattern="^(choose_.*|pay_.*|reminder_pay_.*|cancel|help|status_btn)$"
         )
     )
-
     application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
     application.add_handler(CallbackQueryHandler(adminpanel_buttons, pattern="^admin_"))
-    application.add_handler(CommandHandler('status', status_handler))
-    application.add_handler(CommandHandler("broadcast_all", broadcast_all))
-    application.add_handler(CommandHandler("broadcast_buyers", broadcast_buyers))
-    application.add_handler(CommandHandler("broadcast_nonbuyers", broadcast_nonbuyers))
+
+    # MEDIA HANDLERS
     application.add_handler(
-    MessageHandler(
-        filters.PHOTO & filters.CaptionRegex("^/broadcast_all"),
-        broadcast_all
+        MessageHandler(
+            (filters.PHOTO | filters.Document.ALL) & ~filters.CaptionRegex("^/broadcast_"),
+            message_handler
+        )
     )
-)
 
-application.add_handler(
-    MessageHandler(
-        filters.PHOTO & filters.CaptionRegex("^/broadcast_buyers"),
-        broadcast_buyers
+    application.add_handler(
+        MessageHandler(filters.PHOTO & filters.CaptionRegex("^/broadcast_all"), broadcast_all)
     )
-)
-
-application.add_handler(
-    MessageHandler(
-        filters.PHOTO & filters.CaptionRegex("^/broadcast_nonbuyers"),
-        broadcast_nonbuyers
+    application.add_handler(
+        MessageHandler(filters.PHOTO & filters.CaptionRegex("^/broadcast_buyers"), broadcast_buyers)
     )
-)
-
-application.add_handler(
-    MessageHandler(
-        filters.Document.ALL & filters.CaptionRegex("^/broadcast_all"),
-        broadcast_all
+    application.add_handler(
+        MessageHandler(filters.PHOTO & filters.CaptionRegex("^/broadcast_nonbuyers"), broadcast_nonbuyers)
     )
-)
-
-application.add_handler(
-    MessageHandler(
-        filters.Document.ALL & filters.CaptionRegex("^/broadcast_buyers"),
-        broadcast_buyers
+    application.add_handler(
+        MessageHandler(filters.Document.ALL & filters.CaptionRegex("^/broadcast_all"), broadcast_all)
     )
-)
-
-application.add_handler(
-    MessageHandler(
-        filters.Document.ALL & filters.CaptionRegex("^/broadcast_nonbuyers"),
-        broadcast_nonbuyers
+    application.add_handler(
+        MessageHandler(filters.Document.ALL & filters.CaptionRegex("^/broadcast_buyers"), broadcast_buyers)
     )
-)
-
-# ADMIN EXTRA COMMANDS
-application.add_handler(CommandHandler('pending', pending_cmd))
-application.add_handler(CommandHandler('stats', stats_cmd))
-
-# MEDIA HANDLER
-application.add_handler(
-    MessageHandler(
-        (filters.PHOTO | filters.Document.ALL) & ~filters.CaptionRegex("^/broadcast_"),
-        message_handler
+    application.add_handler(
+        MessageHandler(filters.Document.ALL & filters.CaptionRegex("^/broadcast_nonbuyers"), broadcast_nonbuyers)
     )
-)
 
-application.run_polling()                                                                                                                                 
+    # 🔥 IMPORTANT
+    application.run_polling(drop_pending_updates=True)
