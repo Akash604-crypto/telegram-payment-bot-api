@@ -117,6 +117,9 @@ def load_settings():
     SETTINGS_FILE.write_text(json.dumps(DEFAULT_SETTINGS, indent=2))
     return DEFAULT_SETTINGS
 
+def now_ms():
+    return int(time.perf_counter() * 1000)
+
 def save_settings(s):
     SETTINGS_FILE.write_text(json.dumps(s, indent=2))
 
@@ -328,7 +331,11 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             f"• Do NOT send screenshot\n"
         )
         loop = asyncio.get_running_loop()
+        t0 = now_ms()
+        print(f"[TIMING] total_start               +0 ms")
 
+        # 1️⃣ Razorpay QR creation
+        t1 = now_ms()
         qr_resp = await loop.run_in_executor(
             None,
             create_razorpay_smart_qr,
@@ -336,29 +343,44 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             user.id,
             package
         )
-
+        t2 = now_ms()
+        print(f"[TIMING] razorpay_qr_created       +{t2 - t1} ms")
         if not qr_resp or "image_url" not in qr_resp:
             await query.message.reply_text("❌ Failed to generate UPI QR. Please try again.")
             return
-
+        
+        # 2️⃣ QR image download
+        t3 = now_ms()
         # 🔥 async download (non-blocking)
         qr_raw = await fetch_qr_image_bytes(qr_resp["image_url"])
-
+        t4 = now_ms()
+        print(f"[TIMING] qr_image_downloaded       +{t4 - t3} ms")
+        
+        # 3️⃣ QR crop
+        t5 = now_ms()
         # 🧠 mandatory crop (executor)
         qr_bytes = await loop.run_in_executor(
            None,
            crop_qr_bytes,
            qr_raw
         )
-
-
-
+        t6 = now_ms()
+        print(f"[TIMING] qr_image_cropped          +{t6 - t5} ms")
+        
+        # 4️⃣ Telegram upload
+        t7 = now_ms()
         qr_msg = await query.message.reply_photo(
             photo=qr_bytes,
             caption=caption_text,
             parse_mode="Markdown"
         )
 
+        t8 = now_ms()
+        print(f"[TIMING] telegram_photo_sent       +{t8 - t7} ms")
+
+        print(
+            f"[TIMING][user={user.id}][{package}] TOTAL = {t8 - t0} ms"
+        )
 
 
         entry["razorpay_qr_id"] = qr_resp["id"]   # REQUIRED for webhook match
