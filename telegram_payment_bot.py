@@ -6,21 +6,20 @@ MANUAL: Crypto & Remitly still require Admin Approval.
 """
 
 import os
-import base64
 import aiohttp
 import json
+import requests
+from PIL import Image
 import time
 import hmac
 import hashlib
 import threading
 import asyncio
 from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont, ImageChops
+import signal
 from typing import Dict, Any
 from pathlib import Path
 import sys
-
-import requests
 from flask import Flask, request, jsonify
 from telegram import (
     Update,
@@ -44,6 +43,9 @@ DB_FILE = DATA_DIR / "payments.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 USERS_FILE = DATA_DIR / "users.json"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
+AIOHTTP_SESSION = None
+DB_LOCK = threading.Lock()
+
 
 
 
@@ -99,11 +101,16 @@ USERS = list(set(load_users()))
 
 
 def load_db():
-    if DB_FILE.exists(): return json.loads(DB_FILE.read_text())
+    with DB_LOCK:
+        if DB_FILE.exists():
+            return json.loads(DB_FILE.read_text())
     return {"payments": []}
 
+
 def save_db(db):
-    DB_FILE.write_text(json.dumps(db, indent=2))
+    with DB_LOCK:
+        DB_FILE.write_text(json.dumps(db, indent=2))
+
 
 def load_settings():
     if SETTINGS_FILE.exists(): return json.loads(SETTINGS_FILE.read_text())
@@ -142,10 +149,13 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
 
 
 async def fetch_qr_image_bytes(url: str) -> bytes:
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            resp.raise_for_status()
-            return await resp.read()
+    if not AIOHTTP_SESSION:
+        raise RuntimeError("HTTP session not ready")
+    async with AIOHTTP_SESSION.get(url) as resp:
+        resp.raise_for_status()
+        return await resp.read()
+
+
 
 def crop_qr_bytes(data: bytes) -> BytesIO:
     img = Image.open(BytesIO(data)).convert("RGB")
@@ -267,28 +277,22 @@ async def cleanup_previous_pending_payments(user_id, context):
                     await context.bot.delete_message(
                         p["chat_id"], p["message_id"]
                     )
-            except:
-                pass
+            except Exception as e:
+                print("Ignored error:", e)
+
 
             # delete loading messages
             try:
                 for mid in p.get("loading_msg_ids", []):
                     await context.bot.delete_message(user_id, mid)
-            except:
-                pass
+            except Exception as e:
+                print("Ignored error:", e)
 
             # expire payment
             p["status"] = "expired"
-
+            break
     save_db(DB)
     
-
-async def update_progress(msg, text, bar):
-    try:
-        await msg.edit_text(f"{text}\n{bar}")
-    except:
-        pass
-
 
 
 async def handle_payment(method, package, query, context, from_reminder=False):
@@ -314,17 +318,16 @@ async def handle_payment(method, package, query, context, from_reminder=False):
     if method == "upi":
         amount = SETTINGS["prices"][package]["upi"]
 
-        msg1 = await query.message.reply_text(
-            "⚡ Initializing secure UPI…\n▰▱▱▱▱"
-        )
+        msg1 = await query.message.reply_text("⚡ Generating secure UPI QR…")
         entry["loading_msg_ids"] = [msg1.message_id]
 
-        loop = asyncio.get_running_loop()
-        await update_progress(
-            msg1,
-            "🔐 Connecting to Razorpay…",
-            "▰▰▱▱▱"
+
+        caption_text = (
+            f"✅ **SCAN & PAY ₹{amount}**\n"
+            f"• Auto-detect payment\n"
+            f"• Do NOT send screenshot\n"
         )
+        loop = asyncio.get_running_loop()
 
         qr_resp = await loop.run_in_executor(
             None,
@@ -334,33 +337,9 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             package
         )
 
-        if not qr_resp:
-            await msg1.edit_text("❌ System Busy. Try again later.")
+        if not qr_resp or "image_url" not in qr_resp:
+            await query.message.reply_text("❌ Failed to generate UPI QR. Please try again.")
             return
-
-        entry["razorpay_qr_id"] = qr_resp["id"]
-        await update_progress(
-            msg1,
-            "🖼 Preparing QR…",
-            "▰▰▰▰▱"
-        )
-
-
-        DB["payments"].append(entry)
-        save_db(DB)
-
-        await update_progress(
-            msg1,
-            "✅ QR ready! Sending now…",
-            "▰▰▰▰▰"
-        )
-
-
-        caption_text = (
-            f"✅ **SCAN & PAY ₹{amount}**\n"
-            f"• Auto-detect payment\n"
-            f"• Do NOT send screenshot\n"
-        )
 
         # 🔥 async download (non-blocking)
         qr_raw = await fetch_qr_image_bytes(qr_resp["image_url"])
@@ -382,7 +361,8 @@ async def handle_payment(method, package, query, context, from_reminder=False):
 
 
 
-
+        entry["razorpay_qr_id"] = qr_resp["id"]   # REQUIRED for webhook match
+        DB["payments"].append(entry)  
         entry["caption_text"] = caption_text
         entry["chat_id"] = qr_msg.chat.id
         entry["message_id"] = qr_msg.message_id
@@ -632,6 +612,12 @@ def is_admin(update):
         return update.effective_user.id == SETTINGS["admin_chat_id"]
     return False
 
+def shutdown():
+    if AIOHTTP_SESSION and BOT_LOOP:
+        asyncio.run_coroutine_threadsafe(
+            AIOHTTP_SESSION.close(),
+            BOT_LOOP
+        )
 
 # -------------------- Admin Command Functions (Preserved) --------------------
 
@@ -1117,11 +1103,11 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
                     message_id=message_id,
                     text=new_text
                 )
-        except:
-            pass
+        except Exception as e:
+            print("Ignored error:", e)
 
-        await asyncio.sleep(10)
-        seconds -= 10
+        await asyncio.sleep(30)
+        seconds -= 30
 
 
     # TIMEOUT HANDLING
@@ -1132,8 +1118,8 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
         # Delete payment message
         try:
             await app_instance.bot.delete_message(chat_id, message_id)
-        except:
-            pass
+        except Exception as e:
+            print("Ignored error:", e)
 
         # Notify user
         try:
@@ -1141,15 +1127,23 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
                 chat_id=p["user_id"],
                 text="⌛ **Payment session expired. Please try again.**"
             )
-        except:
-            pass
+        except Exception as e:
+            print("Ignored error:", e)
 
 
 
 async def post_init(application):
-    global BOT_LOOP
+    global BOT_LOOP, AIOHTTP_SESSION
     BOT_LOOP = asyncio.get_running_loop()
+    AIOHTTP_SESSION = aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=10),
+        connector=aiohttp.TCPConnector(
+            limit=10,
+            ttl_dns_cache=300,
+        )
+    )
     asyncio.create_task(reminder_loop())
+
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
@@ -1531,8 +1525,9 @@ async def reminder_loop():
 
                     r["sent"].append(step)
                     save_reminders(REMINDERS)
-                except:
-                    pass
+                except Exception as e:
+                    print("Ignored error:", e)
+
 
         await asyncio.sleep(300)  # check every 5 minutes
 
@@ -1565,6 +1560,8 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("broadcast_buyers", broadcast_buyers))
     application.add_handler(CommandHandler("broadcast_nonbuyers", broadcast_nonbuyers))
     application.add_handler(CommandHandler("setremitlyhowto", setremitlyhowto))
+    signal.signal(signal.SIGTERM, lambda s, f: shutdown())
+    signal.signal(signal.SIGINT, lambda s, f: shutdown())
 
     # CALLBACKS
     application.add_handler(
@@ -1605,3 +1602,4 @@ if __name__ == "__main__":
 
     # 🔥 IMPORTANT
     application.run_polling(drop_pending_updates=True)
+
