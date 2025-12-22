@@ -1,3 +1,4 @@
+
                              
 """
 Telegram Payment Bot (single-file)
@@ -296,6 +297,31 @@ async def cleanup_previous_pending_payments(user_id, context):
             break
     save_db(DB)
     
+async def ux_progress(bot, chat_id, msg_id):
+    try:
+        await bot.edit_message_text(
+            "🔄 Connecting to UPI gateway…",
+            chat_id=chat_id,
+            message_id=msg_id
+        )
+        await asyncio.sleep(1)
+
+        await bot.edit_message_text(
+            "📡 Verifying payment channel…",
+            chat_id=chat_id,
+            message_id=msg_id
+        )
+        await asyncio.sleep(1)
+
+        await bot.edit_message_text(
+            "🖼 Preparing QR image…",
+            chat_id=chat_id,
+            message_id=msg_id
+        )
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
 
 
 async def handle_payment(method, package, query, context, from_reminder=False):
@@ -323,6 +349,14 @@ async def handle_payment(method, package, query, context, from_reminder=False):
 
         msg1 = await query.message.reply_text("⚡ Generating secure UPI QR…")
         entry["loading_msg_ids"] = [msg1.message_id]
+        ux_task = asyncio.create_task(
+            ux_progress(
+                context.bot,
+                msg1.chat.id,
+                msg1.message_id
+            )
+        )
+
 
 
         caption_text = (
@@ -343,9 +377,17 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             user.id,
             package
         )
+        if ux_task and not ux_task.done():
+            ux_task.cancel()
         t2 = now_ms()
         print(f"[TIMING] razorpay_qr_created       +{t2 - t1} ms")
+        
         if not qr_resp or "image_url" not in qr_resp:
+            if ux_task and not ux_task.done():
+                ux_task.cancel()
+            entry["status"] = "expired"
+            DB["payments"].append(entry)
+            save_db(DB)
             await query.message.reply_text("❌ Failed to generate UPI QR. Please try again.")
             return
         
@@ -374,6 +416,16 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             caption=caption_text,
             parse_mode="Markdown"
         )
+        
+        # 🧹 Delete loading / UX message immediately (optional UX polish)
+        try:
+            await context.bot.delete_message(
+                chat_id=msg1.chat.id,
+                message_id=msg1.message_id
+            )
+        except:
+            pass
+
 
         t8 = now_ms()
         print(f"[TIMING] telegram_photo_sent       +{t8 - t7} ms")
@@ -978,6 +1030,7 @@ async def send_link_to_user(user_id: int, package: str):
         chat_id=user_id,
         text=f"✅ Access Granted ({package.upper()}):\n{link}"
     )
+
 
 
 
@@ -1624,4 +1677,3 @@ if __name__ == "__main__":
 
     # 🔥 IMPORTANT
     application.run_polling(drop_pending_updates=True)
-
