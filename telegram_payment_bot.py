@@ -45,6 +45,9 @@ REMINDERS_FILE = DATA_DIR / "reminders.json"
 DB_LOCK = threading.Lock()
 ASSETS = {}
 FONTS = {}
+BASE_DIR = Path(__file__).resolve().parent
+ASSETS_DIR = BASE_DIR / "assets"
+
 
 
 
@@ -88,13 +91,15 @@ def load_users():
 
 def preload_assets():
     try:
-        ASSETS["bhim"] = Image.open("assets/bhim.png").convert("RGBA")
-        ASSETS["upi"] = Image.open("assets/upi.png").convert("RGBA")
-        ASSETS["gpay"] = Image.open("assets/gpay.png").convert("RGBA")
-        ASSETS["phonepe"] = Image.open("assets/phonepe.png").convert("RGBA")
-        ASSETS["paytm"] = Image.open("assets/paytm.png").convert("RGBA")
+        ASSETS["bhim"] = Image.open(ASSETS_DIR / "bhim.png").convert("RGBA")
+        ASSETS["upi"] = Image.open(ASSETS_DIR / "upi.png").convert("RGBA")
+        ASSETS["gpay"] = Image.open(ASSETS_DIR / "gpay.png").convert("RGBA")
+        ASSETS["phonepe"] = Image.open(ASSETS_DIR / "phonepe.png").convert("RGBA")
+        ASSETS["paytm"] = Image.open(ASSETS_DIR / "paytm.png").convert("RGBA")
+        print("✅ Assets loaded successfully")
     except Exception as e:
         print("❌ Asset load failed:", e)
+
 
     for f in [
         "assets/Inter-Bold.ttf",
@@ -232,16 +237,18 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
 
     # -------- Highlighted Pay Instruction (BIGGER & CLEARER) --------
     def load_font(size):
-        for f in [
-            "assets/Inter-Bold.ttf",
-            "assets/Roboto-Bold.ttf",
-            "DejaVuSans-Bold.ttf",  # available on most Linux
-        ]:
+        font_paths = [
+            ASSETS_DIR / "Inter-Bold.ttf",
+            ASSETS_DIR / "Roboto-Bold.ttf",
+            BASE_DIR / "DejaVuSans-Bold.ttf",
+        ]
+        for fp in font_paths:
             try:
-                return ImageFont.truetype(f, size)
+                return ImageFont.truetype(str(fp), size)
             except:
                 continue
         return ImageFont.load_default()
+
 
     font = load_font(48)
 
@@ -282,15 +289,16 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
 
 
     # -------- Footer Logos --------
-    logos = ["gpay.png", "phonepe.png", "paytm.png"]
-    x = CARD_W//2 - 220
+    logos = ["gpay", "phonepe", "paytm"]
+    x = CARD_W // 2 - 220
     y = 880
 
-    for logo in logos:
-        img = Image.open(f"assets/{logo}").convert("RGBA")
+    for key in logos:
+        img = ASSETS[key].copy()
         img.thumbnail((120, 50))
         card.paste(img, (x, y), img)
         x += 160
+
 
     # -------- Merge card --------
     canvas.paste(
@@ -502,11 +510,19 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         # 3️⃣ QR crop
         t5 = now_ms()
         # 🧠 mandatory crop (executor)
-        qr_bytes = await asyncio.get_running_loop().run_in_executor(
-            None,
-            make_upi_qr_card_style,
-            upi_link
-        )
+        try:
+            qr_bytes = await asyncio.get_running_loop().run_in_executor(
+                None,
+                make_upi_qr_card_style,
+                upi_link
+            )
+        except Exception as e:
+            print("❌ QR render failed:", e)
+            await query.message.reply_text(
+                "❌ Failed to render QR. Please try again in a moment."
+            )
+            return
+
 
         t6 = now_ms()
         print(f"[TIMING] qr_image_cropped          +{t6 - t5} ms")
