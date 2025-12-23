@@ -12,7 +12,6 @@ from PIL import Image, ImageDraw, ImageFont
 import qrcode
 from io import BytesIO
 import requests
-import qrcode
 import time
 import hmac
 import hashlib
@@ -155,12 +154,26 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
 def rounded_rect(draw, xy, radius, fill):
     x1, y1, x2, y2 = xy
     draw.rounded_rectangle(xy, radius=radius, fill=fill)
+    
+def gradient_bg(width, height):
+    bg = Image.new("RGB", (width, height), "#eef3f9")
+    draw = ImageDraw.Draw(bg)
+
+    for y in range(height):
+        ratio = y / height
+        r = int(238 + ratio * 6)
+        g = int(243 + ratio * 4)
+        b = int(249 + ratio * 2)
+        draw.line((0, y, width, y), fill=(r, g, b))
+
+    return bg
+
 
 def make_upi_qr_card_style(upi_link: str) -> BytesIO:
     CANVAS_W, CANVAS_H = 1200, 1400
     CARD_W, CARD_H = 900, 1050
 
-    canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), "#eef3f9")
+    canvas = gradient_bg(CANVAS_W, CANVAS_H)
 
     # -------- Shadow --------
     shadow = Image.new("RGBA", (CARD_W + 40, CARD_H + 40), (0, 0, 0, 0))
@@ -168,7 +181,7 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
     sd.rounded_rectangle(
         (20, 20, CARD_W + 20, CARD_H + 20),
         radius=40,
-        fill=(0, 0, 0, 70)
+        fill=(0, 0, 0, 90)
     )
     canvas.paste(
         shadow,
@@ -184,18 +197,20 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
     # -------- Header Logos --------
     bhim = Image.open("assets/bhim.png").convert("RGBA")
     upi = Image.open("assets/upi.png").convert("RGBA")
-    bhim.thumbnail((220, 80))
-    upi.thumbnail((220, 80))
+    bhim.thumbnail((260, 90))
+    upi.thumbnail((260, 90))
 
-    card.paste(bhim, (120, 40), bhim)
-    card.paste(upi, (CARD_W - 120 - upi.width, 40), upi)
+
+    card.paste(bhim, (140, 50), bhim)
+    card.paste(upi, (CARD_W - upi.width - 140, 50), upi)
 
     # -------- QR --------
     qr = qrcode.QRCode(
-        error_correction=qrcode.constants.ERROR_CORRECT_H,
+        error_correction=qrcode.constants.ERROR_CORRECT_Q,
         box_size=12,
         border=4
     )
+
     qr.add_data(upi_link)
     qr.make(fit=True)
 
@@ -209,26 +224,29 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
 
     # -------- Text --------
     try:
-        font = ImageFont.truetype("arial.ttf", 36)
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 46)
     except:
         font = ImageFont.load_default()
 
+
     cd.text(
-        (CARD_W//2, 820),
+        (CARD_W//2, 880),
         "SCAN & PAY WITH ANY UPI APP",
-        fill="#1f2d3d",
+        fill="#0f172a",  # dark slate
         anchor="mm",
         font=font
     )
 
+
     # -------- Footer Logos --------
     logos = ["gpay.png", "phonepe.png", "paytm.png"]
-    x = CARD_W//2 - 220
-    y = 880
+    total_width = sum(Image.open(f"assets/{l}").size[0] for l in logos) + 80
+    x = (CARD_W - total_width) // 2
+    y = 930
 
     for logo in logos:
         img = Image.open(f"assets/{logo}").convert("RGBA")
-        img.thumbnail((120, 50))
+        img.thumbnail((150, 60))
         card.paste(img, (x, y), img)
         x += 160
 
@@ -242,6 +260,7 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
     canvas.save(bio, "PNG", optimize=True)
     bio.seek(0)
     return bio
+
 
 # -------------------- Bot Handlers --------------------
 def conversion_stats(days=None):
@@ -391,10 +410,11 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         entry["loading_msg_ids"] = [msg1.message_id]
 
         caption_text = (
-            f"✅ **SCAN & PAY ₹{amount}**\n"
+            f"✅ SCAN & PAY ₹{amount}\n"
             f"• Auto-detect payment\n"
-            f"• Do NOT send screenshot\n"
+            f"• Do NOT send screenshot"
         )
+
         loop = asyncio.get_running_loop()
         t0 = now_ms()
         print(f"[TIMING] total_start               +0 ms")
