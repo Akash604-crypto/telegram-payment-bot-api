@@ -186,10 +186,10 @@ def make_upi_qr_card_fast(upi_link: str) -> BytesIO:
     CANVAS_W, CANVAS_H = 720, 900
 
     canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), "#eef3f9")
-    card = Image.new("RGB", (780, 960), "white")
+    card = Image.new("RGB", (680, 840), "white")
 
     cd = ImageDraw.Draw(card)
-    cd.rounded_rectangle((0, 0, 780, 960), radius=32, fill="white")
+    cd.rounded_rectangle((0, 0, 680, 840), radius=28, fill="white")
 
     # Header logos
     bhim = ASSETS["bhim"].copy()
@@ -197,8 +197,8 @@ def make_upi_qr_card_fast(upi_link: str) -> BytesIO:
     bhim.thumbnail((200, 70))
     upi.thumbnail((200, 70))
 
-    card.paste(bhim, (60, 30), bhim)
-    card.paste(upi, (780 - upi.width - 60, 30), upi)
+    card.paste(bhim, (40, 25), bhim)
+    card.paste(upi, (680 - upi.width - 40, 25), upi)
 
     # FAST QR (LOW COST)
     qr = qrcode.QRCode(
@@ -213,7 +213,7 @@ def make_upi_qr_card_fast(upi_link: str) -> BytesIO:
     qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
     qr_img = qr_img.resize((360, 360), Image.BILINEAR)  # FAST resize
 
-    card.paste(qr_img, ((780 - 480)//2, 140))
+    card.paste(qr_img, ((680 - 360)//2, 120))
 
     # Text
     cd.text(
@@ -233,11 +233,16 @@ def make_upi_qr_card_fast(upi_link: str) -> BytesIO:
         card.paste(img, (x, 730), img)
         x += 150
 
-    canvas.paste(card, ((CANVAS_W - 780)//2, 80))
+    canvas.paste(card, ((720 - 680)//2, 30))
 
     bio = BytesIO()
     canvas.save(bio, "PNG", optimize=True)
     bio.seek(0)
+    # 🔥 FREE MEMORY
+    del qr_img
+    del qr
+    del card
+    del canvas
     return bio
 
 
@@ -1246,7 +1251,13 @@ async def post_init(application):
 
 
 def run_flask():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 8080)),
+        threaded=False,
+        use_reloader=False
+    )
+
 async def adminpanel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != SETTINGS["admin_chat_id"]:
         return  # Block non-admins
