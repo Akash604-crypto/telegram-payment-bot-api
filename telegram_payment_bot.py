@@ -1673,7 +1673,6 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("broadcast_buyers", broadcast_buyers))
     application.add_handler(CommandHandler("broadcast_nonbuyers", broadcast_nonbuyers))
     application.add_handler(CommandHandler("setremitlyhowto", setremitlyhowto))
-    application.post_shutdown(shutdown)
 
 
     # CALLBACKS
