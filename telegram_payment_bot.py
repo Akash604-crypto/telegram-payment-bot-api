@@ -10,7 +10,6 @@ from PIL import Image, ImageDraw, ImageFont
 import qrcode
 from io import BytesIO
 import requests
-import qrcode
 import time
 import hmac
 import hashlib
@@ -73,13 +72,6 @@ DEFAULT_SETTINGS = {
     }
 }
 
-ASSETS["bhim"] = Image.open("assets/bhim.png").convert("RGBA")
-ASSETS["upi"] = Image.open("assets/upi.png").convert("RGBA")
-ASSETS["gpay"] = Image.open("assets/gpay.png").convert("RGBA")
-ASSETS["phonepe"] = Image.open("assets/phonepe.png").convert("RGBA")
-ASSETS["paytm"] = Image.open("assets/paytm.png").convert("RGBA")
-
-FONTS["bold_48"] = ImageFont.truetype("DejaVuSans-Bold.ttf", 48)
 
 
 RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "")
@@ -93,6 +85,27 @@ def load_users():
     if USERS_FILE.exists():
         return json.loads(USERS_FILE.read_text())
     return []
+
+def preload_assets():
+    try:
+        ASSETS["bhim"] = Image.open("assets/bhim.png").convert("RGBA")
+        ASSETS["upi"] = Image.open("assets/upi.png").convert("RGBA")
+        ASSETS["gpay"] = Image.open("assets/gpay.png").convert("RGBA")
+        ASSETS["phonepe"] = Image.open("assets/phonepe.png").convert("RGBA")
+        ASSETS["paytm"] = Image.open("assets/paytm.png").convert("RGBA")
+    except Exception as e:
+        print("❌ Asset load failed:", e)
+
+    for f in [
+        "assets/Inter-Bold.ttf",
+        "assets/Roboto-Bold.ttf",
+        "DejaVuSans-Bold.ttf",
+    ]:
+        try:
+            FONTS["bold_48"] = ImageFont.truetype(f, 48)
+            break
+        except:
+            continue
 
 
 def load_reminders():
@@ -1295,9 +1308,11 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
 
 
 async def post_init(application):
-    global BOT_LOOP, AIOHTTP_SESSION
+    global BOT_LOOP
     BOT_LOOP = asyncio.get_running_loop()
+    preload_assets()
     asyncio.create_task(reminder_loop())
+
 
 
 def run_flask():
