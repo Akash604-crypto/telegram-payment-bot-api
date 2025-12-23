@@ -167,12 +167,18 @@ def rounded_rect(draw, xy, radius, fill):
     draw.rounded_rectangle(xy, radius=radius, fill=fill)
 
 def make_upi_qr_card_fast(upi_intent: str) -> BytesIO:
-    # QR placeholder box (do NOT change now)
-    QR_LEFT = 170
-    QR_TOP = 260
-    QR_SIZE = 740
-
     base = ASSETS["qr_layout"].copy()
+
+    W, H = base.size
+
+    # ✅ Dynamic safe padding (works for ANY layout size)
+    QR_PADDING_X = int(W * 0.15)
+    QR_PADDING_TOP = int(H * 0.22)
+
+    QR_SIZE = min(
+        W - 2 * QR_PADDING_X,
+        H - QR_PADDING_TOP - int(H * 0.18)
+    )
 
     qr = qrcode.QRCode(
         version=None,
@@ -190,12 +196,13 @@ def make_upi_qr_card_fast(upi_intent: str) -> BytesIO:
 
     qr_img = qr_img.resize((QR_SIZE, QR_SIZE), Image.BICUBIC)
 
-    base.paste(qr_img, (QR_LEFT, QR_TOP))
+    base.paste(qr_img, (QR_PADDING_X, QR_PADDING_TOP))
 
     bio = BytesIO()
     base.save(bio, "PNG", optimize=True)
     bio.seek(0)
     return bio
+
 
 
 
