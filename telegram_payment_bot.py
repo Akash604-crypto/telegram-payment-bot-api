@@ -205,19 +205,56 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
     qr_img = qr_img.resize((620, 620), Image.LANCZOS)
     card.paste(qr_img, ((CARD_W - 620)//2, 160))
 
-    # -------- Text --------
-    try:
-        font = ImageFont.truetype("arial.ttf", 36)
-    except:
-        font = ImageFont.load_default()
+    # -------- Highlighted Pay Instruction (BIGGER & CLEARER) --------
+    def load_font(size):
+        for f in [
+            "assets/Inter-Bold.ttf",
+            "assets/Roboto-Bold.ttf",
+            "DejaVuSans-Bold.ttf",  # available on most Linux
+        ]:
+            try:
+                return ImageFont.truetype(f, size)
+            except:
+                continue
+        return ImageFont.load_default()
+
+    font = load_font(48)
+
+
+    text = "SCAN & PAY WITH ANY UPI APP"
+
+    # text size
+    bbox = cd.textbbox((0, 0), text, font=font)
+    tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
+
+
+    text_x = CARD_W // 2
+    text_y = 845
+
+    # soft background pill (does NOT touch QR)
+    padding_x = 30
+    padding_y = 16
+
+    cd.rounded_rectangle(
+        (
+            text_x - tw//2 - padding_x,
+            text_y - th//2 - padding_y,
+            text_x + tw//2 + padding_x,
+            text_y + th//2 + padding_y,
+        ),
+        radius=30,
+        fill="#f1f5f9"
+    )
 
     cd.text(
-        (CARD_W//2, 820),
-        "SCAN & PAY WITH ANY UPI APP",
-        fill="#1f2d3d",
+        (text_x, text_y),
+        text,
+        fill="#111827",
         anchor="mm",
         font=font
     )
+
 
     # -------- Footer Logos --------
     logos = ["gpay.png", "phonepe.png", "paytm.png"]
