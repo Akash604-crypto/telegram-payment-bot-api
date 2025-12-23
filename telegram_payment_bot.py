@@ -7,8 +7,10 @@ MANUAL: Crypto & Remitly still require Admin Approval.
 """
 
 import os
-import aiohttp
 import json
+from PIL import Image, ImageDraw, ImageFont
+import qrcode
+from io import BytesIO
 import requests
 import qrcode
 import time
@@ -16,7 +18,6 @@ import hmac
 import hashlib
 import threading
 import asyncio
-from io import BytesIO
 import signal
 from typing import Dict, Any
 from pathlib import Path
@@ -44,7 +45,6 @@ DB_FILE = DATA_DIR / "payments.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 USERS_FILE = DATA_DIR / "users.json"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
-AIOHTTP_SESSION = None
 DB_LOCK = threading.Lock()
 
 
@@ -84,22 +84,6 @@ def load_users():
         return json.loads(USERS_FILE.read_text())
     return []
 
-def make_qr_from_upi_link(upi_link: str) -> BytesIO:
-    qr = qrcode.QRCode(
-        version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_H,
-        box_size=8,
-        border=2,
-    )
-    qr.add_data(upi_link)
-    qr.make(fit=True)
-
-    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-
-    bio = BytesIO()
-    img.save(bio, format="PNG", optimize=True)
-    bio.seek(0)
-    return bio
 
 def load_reminders():
     if REMINDERS_FILE.exists():
@@ -168,6 +152,96 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
         return None
 
 
+def rounded_rect(draw, xy, radius, fill):
+    x1, y1, x2, y2 = xy
+    draw.rounded_rectangle(xy, radius=radius, fill=fill)
+
+def make_upi_qr_card_style(upi_link: str) -> BytesIO:
+    CANVAS_W, CANVAS_H = 1200, 1400
+    CARD_W, CARD_H = 900, 1050
+
+    canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), "#eef3f9")
+
+    # -------- Shadow --------
+    shadow = Image.new("RGBA", (CARD_W + 40, CARD_H + 40), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(shadow)
+    sd.rounded_rectangle(
+        (20, 20, CARD_W + 20, CARD_H + 20),
+        radius=40,
+        fill=(0, 0, 0, 70)
+    )
+    canvas.paste(
+        shadow,
+        ((CANVAS_W - CARD_W)//2 - 20, 160),
+        shadow
+    )
+
+    # -------- Card --------
+    card = Image.new("RGB", (CARD_W, CARD_H), "white")
+    cd = ImageDraw.Draw(card)
+    cd.rounded_rectangle((0, 0, CARD_W, CARD_H), radius=40, fill="white")
+
+    # -------- Header Logos --------
+    bhim = Image.open("assets/bhim.png").convert("RGBA")
+    upi = Image.open("assets/upi.png").convert("RGBA")
+    bhim.thumbnail((220, 80))
+    upi.thumbnail((220, 80))
+
+    card.paste(bhim, (120, 40), bhim)
+    card.paste(upi, (CARD_W - 120 - upi.width, 40), upi)
+
+    # -------- QR --------
+    qr = qrcode.QRCode(
+        error_correction=qrcode.constants.ERROR_CORRECT_H,
+        box_size=12,
+        border=4
+    )
+    qr.add_data(upi_link)
+    qr.make(fit=True)
+
+    qr_img = qr.make_image(
+        fill_color="black",
+        back_color="white"
+    ).convert("RGB")
+
+    qr_img = qr_img.resize((620, 620), Image.LANCZOS)
+    card.paste(qr_img, ((CARD_W - 620)//2, 160))
+
+    # -------- Text --------
+    try:
+        font = ImageFont.truetype("arial.ttf", 36)
+    except:
+        font = ImageFont.load_default()
+
+    cd.text(
+        (CARD_W//2, 820),
+        "SCAN & PAY WITH ANY UPI APP",
+        fill="#1f2d3d",
+        anchor="mm",
+        font=font
+    )
+
+    # -------- Footer Logos --------
+    logos = ["gpay.png", "phonepe.png", "paytm.png"]
+    x = CARD_W//2 - 220
+    y = 880
+
+    for logo in logos:
+        img = Image.open(f"assets/{logo}").convert("RGBA")
+        img.thumbnail((120, 50))
+        card.paste(img, (x, y), img)
+        x += 160
+
+    # -------- Merge card --------
+    canvas.paste(
+        card,
+        ((CANVAS_W - CARD_W)//2, 180)
+    )
+
+    bio = BytesIO()
+    canvas.save(bio, "PNG", optimize=True)
+    bio.seek(0)
+    return bio
 
 # -------------------- Bot Handlers --------------------
 def conversion_stats(days=None):
@@ -290,33 +364,6 @@ async def cleanup_previous_pending_payments(user_id, context):
             break
     save_db(DB)
     
-async def ux_progress(bot, chat_id, msg_id):
-    try:
-        await bot.edit_message_text(
-            "🔄 Connecting to UPI gateway…",
-            chat_id=chat_id,
-            message_id=msg_id
-        )
-        await asyncio.sleep(1)
-
-        await bot.edit_message_text(
-            "📡 Verifying payment channel…",
-            chat_id=chat_id,
-            message_id=msg_id
-        )
-        await asyncio.sleep(1)
-
-        await bot.edit_message_text(
-            "🖼 Preparing QR image…",
-            chat_id=chat_id,
-            message_id=msg_id
-        )
-    except asyncio.CancelledError:
-        pass
-    except Exception:
-        pass
-
-
 async def handle_payment(method, package, query, context, from_reminder=False):
     user = query.from_user
     
@@ -342,15 +389,6 @@ async def handle_payment(method, package, query, context, from_reminder=False):
 
         msg1 = await query.message.reply_text("⚡ Generating secure UPI QR…")
         entry["loading_msg_ids"] = [msg1.message_id]
-        ux_task = asyncio.create_task(
-            ux_progress(
-                context.bot,
-                msg1.chat.id,
-                msg1.message_id
-            )
-        )
-
-
 
         caption_text = (
             f"✅ **SCAN & PAY ₹{amount}**\n"
@@ -381,8 +419,7 @@ async def handle_payment(method, package, query, context, from_reminder=False):
                 "❌ QR generation failed. Please try again."
             )
             return
-        if ux_task and not ux_task.done():
-            ux_task.cancel()
+
         t2 = now_ms()
         print(f"[TIMING] razorpay_qr_created       +{t2 - t1} ms")
         upi_link = qr_resp.get("image_content")
@@ -398,7 +435,7 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         # 3️⃣ QR crop
         t5 = now_ms()
         # 🧠 mandatory crop (executor)
-        qr_bytes = make_qr_from_upi_link(upi_link)
+        qr_bytes = make_upi_qr_card_style(upi_link)
         t6 = now_ms()
         print(f"[TIMING] qr_image_cropped          +{t6 - t5} ms")
         
@@ -681,12 +718,6 @@ def is_admin(update):
         return update.effective_user.id == SETTINGS["admin_chat_id"]
     return False
 
-def shutdown():
-    if AIOHTTP_SESSION and BOT_LOOP:
-        asyncio.run_coroutine_threadsafe(
-            AIOHTTP_SESSION.close(),
-            BOT_LOOP
-        )
 
 # -------------------- Admin Command Functions (Preserved) --------------------
 
@@ -1207,13 +1238,6 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
 async def post_init(application):
     global BOT_LOOP, AIOHTTP_SESSION
     BOT_LOOP = asyncio.get_running_loop()
-    AIOHTTP_SESSION = aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=10),
-        connector=aiohttp.TCPConnector(
-            limit=10,
-            ttl_dns_cache=300,
-        )
-    )
     asyncio.create_task(reminder_loop())
 
 
@@ -1632,8 +1656,6 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("broadcast_buyers", broadcast_buyers))
     application.add_handler(CommandHandler("broadcast_nonbuyers", broadcast_nonbuyers))
     application.add_handler(CommandHandler("setremitlyhowto", setremitlyhowto))
-    signal.signal(signal.SIGTERM, lambda s, f: shutdown())
-    signal.signal(signal.SIGINT, lambda s, f: shutdown())
 
     # CALLBACKS
     application.add_handler(
