@@ -1714,4 +1714,7 @@ if __name__ == "__main__":
     )
 
     # 🔥 IMPORTANT
-    application.run_polling(drop_pending_updates=True)
+    application.run_polling(
+        drop_pending_updates=True,
+        shutdown_callback=shutdown
+    )
