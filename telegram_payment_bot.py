@@ -485,7 +485,12 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         # 3️⃣ QR crop
         t5 = now_ms()
         # 🧠 mandatory crop (executor)
-        qr_bytes = make_upi_qr_card_style(upi_link)
+        qr_bytes = await loop.run_in_executor(
+            None,
+            make_upi_qr_card_style,
+            upi_link
+        )
+
         t6 = now_ms()
         print(f"[TIMING] qr_image_cropped          +{t6 - t5} ms")
         
