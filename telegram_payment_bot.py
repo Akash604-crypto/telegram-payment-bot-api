@@ -170,12 +170,13 @@ def make_upi_qr_card_fast(upi_intent: str) -> BytesIO:
     base = ASSETS["qr_layout"].copy()
     W, H = base.size
 
-    QR_PADDING_X = int(W * 0.15)
-    QR_PADDING_TOP = int(H * 0.22)
-    QR_SIZE = min(
-        W - 2 * QR_PADDING_X,
-        H - QR_PADDING_TOP - int(H * 0.18)
-    )
+    # ---- FIXED SAFE QR ZONE (matches your layout exactly) ----
+    QR_LEFT   = int(W * 0.18)
+    QR_TOP    = int(H * 0.22)
+    QR_RIGHT  = int(W * 0.82)
+    QR_BOTTOM = int(H * 0.70)
+
+    QR_SIZE = min(QR_RIGHT - QR_LEFT, QR_BOTTOM - QR_TOP)
 
     qr = qrcode.QRCode(
         version=None,  # ✅ auto
@@ -192,8 +193,7 @@ def make_upi_qr_card_fast(upi_intent: str) -> BytesIO:
     ).convert("RGB")
 
     qr_img = qr_img.resize((QR_SIZE, QR_SIZE), Image.NEAREST)
-
-    base.paste(qr_img, (QR_PADDING_X, QR_PADDING_TOP))
+    base.paste(qr_img, (QR_LEFT, QR_TOP))
 
     bio = BytesIO()
     base = base.convert("RGB")   # remove alpha
