@@ -196,7 +196,9 @@ def make_upi_qr_card_fast(upi_intent: str) -> BytesIO:
     base.paste(qr_img, (QR_PADDING_X, QR_PADDING_TOP))
 
     bio = BytesIO()
-    base.save(bio, "PNG", optimize=False)
+    base = base.convert("RGB")   # remove alpha
+    base.save(bio, "JPEG", quality=88, subsampling=1)
+
     bio.seek(0)
     return bio
 
@@ -438,11 +440,12 @@ async def handle_payment(method, package, query, context, from_reminder=False):
 
 
         entry["razorpay_qr_id"] = qr_resp["id"]   # REQUIRED for webhook match
-        DB["payments"].append(entry)  
+        DB["payments"].append(entry) 
+        save_db(DB) 
         entry["caption_text"] = caption_text
         entry["chat_id"] = qr_msg.chat.id
         entry["message_id"] = qr_msg.message_id
-        save_db(DB)
+        
 
         old = COUNTDOWN_TASKS.pop(entry["payment_id"], None)
         if old:        
