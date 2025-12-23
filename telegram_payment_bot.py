@@ -183,7 +183,7 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
 
     canvas = gradient_bg(CANVAS_W, CANVAS_H)
     
-        # -------- Card --------
+    # -------- Card --------
     card = Image.new("RGB", (CARD_W, CARD_H), "white")
     cd = ImageDraw.Draw(card)
     cd.rounded_rectangle((0, 0, CARD_W, CARD_H), radius=40, fill="white")
