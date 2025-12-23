@@ -168,44 +168,37 @@ def rounded_rect(draw, xy, radius, fill):
 
 def make_upi_qr_card_fast(upi_intent: str) -> BytesIO:
     base = ASSETS["qr_layout"].copy()
-
     W, H = base.size
 
-    # ✅ Dynamic safe padding (works for ANY layout size)
     QR_PADDING_X = int(W * 0.15)
     QR_PADDING_TOP = int(H * 0.22)
-
     QR_SIZE = min(
         W - 2 * QR_PADDING_X,
         H - QR_PADDING_TOP - int(H * 0.18)
     )
 
     qr = qrcode.QRCode(
-        version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_Q,
-        box_size=10,
+        version=2,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=6,
         border=2
     )
     qr.add_data(upi_intent)
-    qr.make(fit=True)
+    qr.make(fit=False)
 
     qr_img = qr.make_image(
         fill_color="black",
         back_color="white"
     ).convert("RGB")
 
-    qr_img = qr_img.resize((QR_SIZE, QR_SIZE), Image.BICUBIC)
+    qr_img = qr_img.resize((QR_SIZE, QR_SIZE), Image.NEAREST)
 
     base.paste(qr_img, (QR_PADDING_X, QR_PADDING_TOP))
 
     bio = BytesIO()
-    base.save(bio, "PNG", optimize=True)
+    base.save(bio, "PNG", optimize=False)
     bio.seek(0)
     return bio
-
-
-
-
 
 # -------------------- Bot Handlers --------------------
 def conversion_stats(days=None):
