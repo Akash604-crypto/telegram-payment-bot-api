@@ -83,6 +83,14 @@ def load_users():
         return json.loads(USERS_FILE.read_text())
     return []
 
+def load_font(size):
+    try:
+        return ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            size
+        )
+    except:
+        return ImageFont.load_default()
 
 def load_reminders():
     if REMINDERS_FILE.exists():
@@ -200,9 +208,20 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
     bhim.thumbnail((260, 90))
     upi.thumbnail((260, 90))
 
+    HEADER_Y = 55  # single reference line
 
-    card.paste(bhim, (140, 50), bhim)
-    card.paste(upi, (CARD_W - upi.width - 140, 50), upi)
+    card.paste(
+        bhim,
+        (140, HEADER_Y + (90 - bhim.height) // 2),
+        bhim
+    )
+
+    card.paste(
+        upi,
+        (CARD_W - upi.width - 140, HEADER_Y + (90 - upi.height) // 2),
+        upi
+    )
+
 
     # -------- QR --------
     qr = qrcode.QRCode(
@@ -221,12 +240,16 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
 
     qr_img = qr_img.resize((620, 620), Image.LANCZOS)
     card.paste(qr_img, ((CARD_W - 620)//2, 160))
+    amt_font = load_font(40)
+    font = load_font(46)
 
-    # -------- Text --------
-    try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 46)
-    except:
-        font = ImageFont.load_default()
+    cd.text(
+        (CARD_W//2, 820),
+        "Amount will be shown in your UPI app",
+        fill="#475569",
+        anchor="mm",
+        font=amt_font
+    )
 
 
     cd.text(
@@ -238,23 +261,24 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
     )
 
 
-    # -------- Footer Logos --------
+
+    # -------- Footer (Outside Card) --------
+    footer_y = 1250
     logos = ["gpay.png", "phonepe.png", "paytm.png"]
-    total_width = sum(Image.open(f"assets/{l}").size[0] for l in logos) + 80
-    x = (CARD_W - total_width) // 2
-    y = 930
 
-    for logo in logos:
-        img = Image.open(f"assets/{logo}").convert("RGBA")
-        img.thumbnail((150, 60))
-        card.paste(img, (x, y), img)
-        x += 160
+    imgs = []
+    for l in logos:
+        img = Image.open(f"assets/{l}").convert("RGBA")
+        img.thumbnail((190, 80))
+        imgs.append(img)
 
-    # -------- Merge card --------
-    canvas.paste(
-        card,
-        ((CANVAS_W - CARD_W)//2, 180)
-    )
+    total_w = sum(i.width for i in imgs) + 120
+    x = (CANVAS_W - total_w) // 2
+
+    for img in imgs:
+        canvas.paste(img, (x, footer_y), img)
+        x += img.width + 60
+
 
     bio = BytesIO()
     canvas.save(bio, "PNG", optimize=True)
@@ -1136,6 +1160,12 @@ def razorpay_webhook():
 
     if data.get('event') == 'qr_code.credited':
         qr_entity = data['payload']['qr_code']['entity']
+
+        amount_received = qr_entity.get("payments_amount_received", 0)
+
+        if amount_received <= 0:
+            return jsonify({"status": "not_paid"}), 200
+
         qr_id = qr_entity['id']
         user_id = int(qr_entity['notes']['user_id'])
         package = qr_entity['notes']['package']
@@ -1256,9 +1286,10 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
 
 
 async def post_init(application):
-    global BOT_LOOP, AIOHTTP_SESSION
+    global BOT_LOOP
     BOT_LOOP = asyncio.get_running_loop()
     asyncio.create_task(reminder_loop())
+
 
 
 def run_flask():
