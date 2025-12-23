@@ -51,11 +51,11 @@ ASSETS = {}
 
 def preload_assets():
     try:
-        ASSETS["bhim"] = Image.open(ASSETS_DIR / "bhim.png").convert("RGBA")
-        ASSETS["upi"] = Image.open(ASSETS_DIR / "upi.png").convert("RGBA")
-        ASSETS["gpay"] = Image.open(ASSETS_DIR / "gpay.png").convert("RGBA")
-        ASSETS["phonepe"] = Image.open(ASSETS_DIR / "phonepe.png").convert("RGBA")
-        ASSETS["paytm"] = Image.open(ASSETS_DIR / "paytm.png").convert("RGBA")
+        ASSETS["bhim"] = Image.open(ASSETS_DIR / "bhim.png").convert("RGB")
+        ASSETS["upi"] = Image.open(ASSETS_DIR / "upi.png").convert("RGB")
+        ASSETS["gpay"] = Image.open(ASSETS_DIR / "gpay.png").convert("RGB")
+        ASSETS["phonepe"] = Image.open(ASSETS_DIR / "phonepe.png").convert("RGB")
+        ASSETS["paytm"] = Image.open(ASSETS_DIR / "paytm.png").convert("RGB")
     except Exception as e:
         print("❌ Asset load failed:", e)
         sys.exit(1)   # correct: fail fast
@@ -183,7 +183,7 @@ def rounded_rect(draw, xy, radius, fill):
     draw.rounded_rectangle(xy, radius=radius, fill=fill)
 
 def make_upi_qr_card_fast(upi_link: str) -> BytesIO:
-    CANVAS_W, CANVAS_H = 900, 1100
+    CANVAS_W, CANVAS_H = 720, 900
 
     canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), "#eef3f9")
     card = Image.new("RGB", (780, 960), "white")
@@ -211,7 +211,7 @@ def make_upi_qr_card_fast(upi_link: str) -> BytesIO:
     qr.make(fit=True)
 
     qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-    qr_img = qr_img.resize((480, 480), Image.BILINEAR)  # FAST resize
+    qr_img = qr_img.resize((360, 360), Image.BILINEAR)  # FAST resize
 
     card.paste(qr_img, ((780 - 480)//2, 140))
 
@@ -236,7 +236,7 @@ def make_upi_qr_card_fast(upi_link: str) -> BytesIO:
     canvas.paste(card, ((CANVAS_W - 780)//2, 80))
 
     bio = BytesIO()
-    canvas.save(bio, "PNG")  # ❌ NO optimize
+    canvas.save(bio, "PNG", optimize=True)
     bio.seek(0)
     return bio
 
