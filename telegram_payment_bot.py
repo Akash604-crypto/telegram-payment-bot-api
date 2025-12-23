@@ -1,3 +1,4 @@
+
 """
 Telegram Payment Bot (single-file)
 UPGRADED: UPI uses Smart Dynamic QR (Auto-Approve).
@@ -7,7 +8,7 @@ MANUAL: Crypto & Remitly still require Admin Approval.
 import os
 import json
 from PIL import Image, ImageDraw, ImageFont
-import qrcode
+from pathlib import Path
 from io import BytesIO
 import requests
 import qrcode
@@ -18,7 +19,6 @@ import threading
 import asyncio
 import signal
 from typing import Dict, Any
-from pathlib import Path
 import sys
 from flask import Flask, request, jsonify
 from telegram import (
@@ -44,6 +44,34 @@ SETTINGS_FILE = DATA_DIR / "settings.json"
 USERS_FILE = DATA_DIR / "users.json"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
 DB_LOCK = threading.Lock()
+BASE_DIR = Path(__file__).resolve().parent
+ASSETS_DIR = BASE_DIR / "assets"
+# ---------- ASSET CACHE ----------
+ASSETS = {}
+
+def preload_assets():
+    try:
+        ASSETS["bhim"] = Image.open(ASSETS_DIR / "bhim.png").convert("RGBA")
+        ASSETS["upi"] = Image.open(ASSETS_DIR / "upi.png").convert("RGBA")
+        ASSETS["gpay"] = Image.open(ASSETS_DIR / "gpay.png").convert("RGBA")
+        ASSETS["phonepe"] = Image.open(ASSETS_DIR / "phonepe.png").convert("RGBA")
+        ASSETS["paytm"] = Image.open(ASSETS_DIR / "paytm.png").convert("RGBA")
+    except Exception as e:
+        print("❌ Asset load failed:", e)
+        sys.exit(1)   # correct: fail fast
+
+    try:
+        ASSETS["font"] = ImageFont.truetype(
+            ASSETS_DIR / "Inter-Bold.ttf", 38
+        )
+    except Exception as e:
+        print("⚠️ Font fallback:", e)
+        ASSETS["font"] = ImageFont.load_default()
+
+
+
+preload_assets()
+
 
 
 
@@ -154,92 +182,64 @@ def rounded_rect(draw, xy, radius, fill):
     x1, y1, x2, y2 = xy
     draw.rounded_rectangle(xy, radius=radius, fill=fill)
 
-def make_upi_qr_card_style(upi_link: str) -> BytesIO:
-    CANVAS_W, CANVAS_H = 1200, 1400
-    CARD_W, CARD_H = 900, 1050
+def make_upi_qr_card_fast(upi_link: str) -> BytesIO:
+    CANVAS_W, CANVAS_H = 900, 1100
 
     canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), "#eef3f9")
+    card = Image.new("RGB", (780, 960), "white")
 
-    # -------- Shadow --------
-    shadow = Image.new("RGBA", (CARD_W + 40, CARD_H + 40), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(shadow)
-    sd.rounded_rectangle(
-        (20, 20, CARD_W + 20, CARD_H + 20),
-        radius=40,
-        fill=(0, 0, 0, 70)
-    )
-    canvas.paste(
-        shadow,
-        ((CANVAS_W - CARD_W)//2 - 20, 160),
-        shadow
-    )
-
-    # -------- Card --------
-    card = Image.new("RGB", (CARD_W, CARD_H), "white")
     cd = ImageDraw.Draw(card)
-    cd.rounded_rectangle((0, 0, CARD_W, CARD_H), radius=40, fill="white")
+    cd.rounded_rectangle((0, 0, 780, 960), radius=32, fill="white")
 
-    # -------- Header Logos --------
-    bhim = Image.open("assets/bhim.png").convert("RGBA")
-    upi = Image.open("assets/upi.png").convert("RGBA")
-    bhim.thumbnail((220, 80))
-    upi.thumbnail((220, 80))
+    # Header logos
+    bhim = ASSETS["bhim"].copy()
+    upi = ASSETS["upi"].copy()
+    bhim.thumbnail((200, 70))
+    upi.thumbnail((200, 70))
 
-    card.paste(bhim, (120, 40), bhim)
-    card.paste(upi, (CARD_W - 120 - upi.width, 40), upi)
+    card.paste(bhim, (60, 30), bhim)
+    card.paste(upi, (780 - upi.width - 60, 30), upi)
 
-    # -------- QR --------
+    # FAST QR (LOW COST)
     qr = qrcode.QRCode(
-        error_correction=qrcode.constants.ERROR_CORRECT_H,
-        box_size=12,
-        border=4
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,  # FAST
+        box_size=6,                                         # FAST
+        border=2
     )
     qr.add_data(upi_link)
     qr.make(fit=True)
 
-    qr_img = qr.make_image(
-        fill_color="black",
-        back_color="white"
-    ).convert("RGB")
+    qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    qr_img = qr_img.resize((480, 480), Image.BILINEAR)  # FAST resize
 
-    qr_img = qr_img.resize((620, 620), Image.LANCZOS)
-    card.paste(qr_img, ((CARD_W - 620)//2, 160))
+    card.paste(qr_img, ((780 - 480)//2, 140))
 
-    # -------- Text --------
-    try:
-        font = ImageFont.truetype("arial.ttf", 36)
-    except:
-        font = ImageFont.load_default()
-
+    # Text
     cd.text(
-        (CARD_W//2, 820),
+        (390, 680),
         "SCAN & PAY WITH ANY UPI APP",
         fill="#1f2d3d",
         anchor="mm",
-        font=font
+        font=ASSETS["font"]
     )
 
-    # -------- Footer Logos --------
-    logos = ["gpay.png", "phonepe.png", "paytm.png"]
-    x = CARD_W//2 - 220
-    y = 880
+    # Footer logos
+    logos = [ASSETS["gpay"], ASSETS["phonepe"], ASSETS["paytm"]]
+    x = 390 - 200
+    for l in logos:
+        img = l.copy()
+        img.thumbnail((100, 42))
+        card.paste(img, (x, 730), img)
+        x += 150
 
-    for logo in logos:
-        img = Image.open(f"assets/{logo}").convert("RGBA")
-        img.thumbnail((120, 50))
-        card.paste(img, (x, y), img)
-        x += 160
-
-    # -------- Merge card --------
-    canvas.paste(
-        card,
-        ((CANVAS_W - CARD_W)//2, 180)
-    )
+    canvas.paste(card, ((CANVAS_W - 780)//2, 80))
 
     bio = BytesIO()
-    canvas.save(bio, "PNG", optimize=True)
+    canvas.save(bio, "PNG")  # ❌ NO optimize
     bio.seek(0)
     return bio
+
 
 # -------------------- Bot Handlers --------------------
 def conversion_stats(days=None):
@@ -433,7 +433,13 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         # 3️⃣ QR crop
         t5 = now_ms()
         # 🧠 mandatory crop (executor)
-        qr_bytes = make_upi_qr_card_style(upi_link)
+        loop = asyncio.get_running_loop()
+        qr_bytes = await loop.run_in_executor(
+            None,
+            make_upi_qr_card_fast,
+            upi_link
+        )
+
         t6 = now_ms()
         print(f"[TIMING] qr_image_cropped          +{t6 - t5} ms")
         
@@ -1234,7 +1240,7 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
 
 
 async def post_init(application):
-    global BOT_LOOP, AIOHTTP_SESSION
+    global BOT_LOOP
     BOT_LOOP = asyncio.get_running_loop()
     asyncio.create_task(reminder_loop())
 
