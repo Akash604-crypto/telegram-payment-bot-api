@@ -243,6 +243,8 @@ def make_upi_qr_card_fast(upi_link: str) -> BytesIO:
     del qr
     del card
     del canvas
+    del bhim
+    del upi
     return bio
 
 
@@ -481,9 +483,14 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         entry["message_id"] = qr_msg.message_id
         save_db(DB)
 
+        old = COUNTDOWN_TASKS.pop(entry["payment_id"], None)
+        if old:        
+            old.cancel()
+
         COUNTDOWN_TASKS[entry["payment_id"]] = asyncio.create_task(
             start_countdown(entry["payment_id"], qr_msg.chat.id, qr_msg.message_id, 600)
         )
+
         return
 
     # ---------- MANUAL ----------
@@ -500,9 +507,15 @@ async def handle_payment(method, package, query, context, from_reminder=False):
     entry["message_id"] = msg.message_id
     save_db(DB)
 
+    old = COUNTDOWN_TASKS.pop(entry["payment_id"], None)
+    if old:
+        old.cancel()
+
     COUNTDOWN_TASKS[entry["payment_id"]] = asyncio.create_task(
         start_countdown(entry["payment_id"], msg.chat.id, msg.message_id, 1800)
     )
+
+
     return
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -701,12 +714,21 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ]
                 ])
 
-                await context.bot.send_photo(
-                    chat_id=SETTINGS["admin_chat_id"],
-                    photo=open(save_path, "rb"),
-                    caption=f"🔎 UNDER REVIEW\nUser: {user_id}\nPackage: {p['package']}",
-                    reply_markup=buttons
+                caption = (
+                    f"🔎 UNDER REVIEW\n"
+                    f"User: {user_id}\n"
+                    f"Package: {p['package']}"
                 )
+
+                with open(save_path, "rb") as f:
+                    await context.bot.send_photo(
+                        chat_id=SETTINGS["admin_chat_id"],
+                        photo=f,
+                        caption=caption,
+                        reply_markup=buttons
+                    )
+
+
 
                 # -------- AUTO-DELETE USER'S UPLOADED SCREENSHOT ----------
                 try:
