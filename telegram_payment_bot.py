@@ -1,5 +1,3 @@
-
-                             
 """
 Telegram Payment Bot (single-file)
 UPGRADED: UPI uses Smart Dynamic QR (Auto-Approve).
@@ -12,6 +10,7 @@ from PIL import Image, ImageDraw, ImageFont
 import qrcode
 from io import BytesIO
 import requests
+import qrcode
 import time
 import hmac
 import hashlib
@@ -83,14 +82,6 @@ def load_users():
         return json.loads(USERS_FILE.read_text())
     return []
 
-def load_font(size):
-    try:
-        return ImageFont.truetype(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            size
-        )
-    except:
-        return ImageFont.load_default()
 
 def load_reminders():
     if REMINDERS_FILE.exists():
@@ -162,31 +153,12 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
 def rounded_rect(draw, xy, radius, fill):
     x1, y1, x2, y2 = xy
     draw.rounded_rectangle(xy, radius=radius, fill=fill)
-    
-def gradient_bg(width, height):
-    bg = Image.new("RGB", (width, height), "#eef3f9")
-    draw = ImageDraw.Draw(bg)
-
-    for y in range(height):
-        ratio = y / height
-        r = int(238 + ratio * 6)
-        g = int(243 + ratio * 4)
-        b = int(249 + ratio * 2)
-        draw.line((0, y, width, y), fill=(r, g, b))
-
-    return bg
-
 
 def make_upi_qr_card_style(upi_link: str) -> BytesIO:
     CANVAS_W, CANVAS_H = 1200, 1400
     CARD_W, CARD_H = 900, 1050
 
-    canvas = gradient_bg(CANVAS_W, CANVAS_H)
-    
-    # -------- Card --------
-    card = Image.new("RGB", (CARD_W, CARD_H), "white")
-    cd = ImageDraw.Draw(card)
-    cd.rounded_rectangle((0, 0, CARD_W, CARD_H), radius=40, fill="white")
+    canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), "#eef3f9")
 
     # -------- Shadow --------
     shadow = Image.new("RGBA", (CARD_W + 40, CARD_H + 40), (0, 0, 0, 0))
@@ -194,47 +166,34 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
     sd.rounded_rectangle(
         (20, 20, CARD_W + 20, CARD_H + 20),
         radius=40,
-        fill=(0, 0, 0, 90)
+        fill=(0, 0, 0, 70)
     )
     canvas.paste(
         shadow,
         ((CANVAS_W - CARD_W)//2 - 20, 160),
         shadow
     )
-    canvas.paste(
-        card,
-        ((CANVAS_W - CARD_W)//2, 160)
-    )
 
+    # -------- Card --------
+    card = Image.new("RGB", (CARD_W, CARD_H), "white")
+    cd = ImageDraw.Draw(card)
+    cd.rounded_rectangle((0, 0, CARD_W, CARD_H), radius=40, fill="white")
 
     # -------- Header Logos --------
     bhim = Image.open("assets/bhim.png").convert("RGBA")
     upi = Image.open("assets/upi.png").convert("RGBA")
-    bhim.thumbnail((260, 90))
-    upi.thumbnail((260, 90))
+    bhim.thumbnail((220, 80))
+    upi.thumbnail((220, 80))
 
-    HEADER_Y = 55  # single reference line
-
-    card.paste(
-        bhim,
-        (140, HEADER_Y + (90 - bhim.height) // 2),
-        bhim
-    )
-
-    card.paste(
-        upi,
-        (CARD_W - upi.width - 140, HEADER_Y + (90 - upi.height) // 2),
-        upi
-    )
-
+    card.paste(bhim, (120, 40), bhim)
+    card.paste(upi, (CARD_W - 120 - upi.width, 40), upi)
 
     # -------- QR --------
     qr = qrcode.QRCode(
-        error_correction=qrcode.constants.ERROR_CORRECT_Q,
+        error_correction=qrcode.constants.ERROR_CORRECT_H,
         box_size=12,
         border=4
     )
-
     qr.add_data(upi_link)
     qr.make(fit=True)
 
@@ -245,52 +204,42 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
 
     qr_img = qr_img.resize((620, 620), Image.LANCZOS)
     card.paste(qr_img, ((CARD_W - 620)//2, 160))
-    amt_font = load_font(40)
-    font = load_font(46)
+
+    # -------- Text --------
+    try:
+        font = ImageFont.truetype("arial.ttf", 36)
+    except:
+        font = ImageFont.load_default()
 
     cd.text(
         (CARD_W//2, 820),
-        "Amount will be shown in your UPI app",
-        fill="#475569",
-        anchor="mm",
-        font=amt_font
-    )
-
-
-    cd.text(
-        (CARD_W//2, 880),
         "SCAN & PAY WITH ANY UPI APP",
-        fill="#0f172a",  # dark slate
+        fill="#1f2d3d",
         anchor="mm",
         font=font
     )
 
-    
-
-
-    # -------- Footer (Outside Card) --------
-    footer_y = 1250
+    # -------- Footer Logos --------
     logos = ["gpay.png", "phonepe.png", "paytm.png"]
+    x = CARD_W//2 - 220
+    y = 880
 
-    imgs = []
-    for l in logos:
-        img = Image.open(f"assets/{l}").convert("RGBA")
-        img.thumbnail((190, 80))
-        imgs.append(img)
+    for logo in logos:
+        img = Image.open(f"assets/{logo}").convert("RGBA")
+        img.thumbnail((120, 50))
+        card.paste(img, (x, y), img)
+        x += 160
 
-    total_w = sum(i.width for i in imgs) + 120
-    x = (CANVAS_W - total_w) // 2
-
-    for img in imgs:
-        canvas.paste(img, (x, footer_y), img)
-        x += img.width + 60
-
+    # -------- Merge card --------
+    canvas.paste(
+        card,
+        ((CANVAS_W - CARD_W)//2, 180)
+    )
 
     bio = BytesIO()
     canvas.save(bio, "PNG", optimize=True)
     bio.seek(0)
     return bio
-
 
 # -------------------- Bot Handlers --------------------
 def conversion_stats(days=None):
@@ -440,11 +389,10 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         entry["loading_msg_ids"] = [msg1.message_id]
 
         caption_text = (
-            f"✅ SCAN & PAY ₹{amount}\n"
+            f"✅ **SCAN & PAY ₹{amount}**\n"
             f"• Auto-detect payment\n"
-            f"• Do NOT send screenshot"
+            f"• Do NOT send screenshot\n"
         )
-
         loop = asyncio.get_running_loop()
         t0 = now_ms()
         print(f"[TIMING] total_start               +0 ms")
@@ -485,12 +433,7 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         # 3️⃣ QR crop
         t5 = now_ms()
         # 🧠 mandatory crop (executor)
-        qr_bytes = await loop.run_in_executor(
-            None,
-            make_upi_qr_card_style,
-            upi_link
-        )
-
+        qr_bytes = make_upi_qr_card_style(upi_link)
         t6 = now_ms()
         print(f"[TIMING] qr_image_cropped          +{t6 - t5} ms")
         
@@ -1171,12 +1114,6 @@ def razorpay_webhook():
 
     if data.get('event') == 'qr_code.credited':
         qr_entity = data['payload']['qr_code']['entity']
-
-        amount_received = qr_entity.get("payments_amount_received", 0)
-
-        if amount_received <= 0:
-            return jsonify({"status": "not_paid"}), 200
-
         qr_id = qr_entity['id']
         user_id = int(qr_entity['notes']['user_id'])
         package = qr_entity['notes']['package']
@@ -1297,10 +1234,9 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
 
 
 async def post_init(application):
-    global BOT_LOOP
+    global BOT_LOOP, AIOHTTP_SESSION
     BOT_LOOP = asyncio.get_running_loop()
     asyncio.create_task(reminder_loop())
-
 
 
 def run_flask():
