@@ -178,13 +178,13 @@ def make_upi_qr_card_fast(upi_intent: str) -> BytesIO:
     )
 
     qr = qrcode.QRCode(
-        version=2,
+        version=None,  # ✅ auto
         error_correction=qrcode.constants.ERROR_CORRECT_M,
         box_size=6,
         border=2
     )
     qr.add_data(upi_intent)
-    qr.make(fit=False)
+    qr.make(fit=True)  # ✅ FIX
 
     qr_img = qr.make_image(
         fill_color="black",
