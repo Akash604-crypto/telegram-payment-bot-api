@@ -10,7 +10,7 @@ import os
 import aiohttp
 import json
 import requests
-from PIL import Image
+import qrcode
 import time
 import hmac
 import hashlib
@@ -84,6 +84,23 @@ def load_users():
         return json.loads(USERS_FILE.read_text())
     return []
 
+def make_qr_from_upi_link(upi_link: str) -> BytesIO:
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_H,
+        box_size=8,
+        border=2,
+    )
+    qr.add_data(upi_link)
+    qr.make(fit=True)
+
+    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
+    bio = BytesIO()
+    img.save(bio, format="PNG", optimize=True)
+    bio.seek(0)
+    return bio
+
 def load_reminders():
     if REMINDERS_FILE.exists():
         return json.loads(REMINDERS_FILE.read_text())
@@ -151,30 +168,6 @@ def create_razorpay_smart_qr(amount_in_rupees, user_id, package):
         return None
 
 
-
-async def fetch_qr_image_bytes(url: str) -> bytes:
-    if not AIOHTTP_SESSION:
-        raise RuntimeError("HTTP session not ready")
-    async with AIOHTTP_SESSION.get(url) as resp:
-        resp.raise_for_status()
-        return await resp.read()
-
-
-
-def crop_qr_bytes(data: bytes) -> BytesIO:
-    img = Image.open(BytesIO(data)).convert("RGB")
-    w, h = img.size
-
-    # 🔐 MANDATORY SAFE CROP (UNCHANGED)
-    SAFE_TOP_CROP = int(h * 0.20)
-    SAFE_BOTTOM_CROP = int(h * 0.20)
-
-    cropped = img.crop((0, SAFE_TOP_CROP, w, h - SAFE_BOTTOM_CROP))
-
-    bio = BytesIO()
-    cropped.save(bio, format="JPEG", quality=88)
-    bio.seek(0)
-    return bio
 
 # -------------------- Bot Handlers --------------------
 def conversion_stats(days=None):
@@ -377,35 +370,35 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             user.id,
             package
         )
+        # ✅ SAFETY CHECK (THIS IS WHERE IT GOES)
+        if not qr_resp or "id" not in qr_resp:
+            if entry not in DB["payments"]:
+                DB["payments"].append(entry)
+            save_db(DB)
+
+
+            await query.message.reply_text(
+                "❌ QR generation failed. Please try again."
+            )
+            return
         if ux_task and not ux_task.done():
             ux_task.cancel()
         t2 = now_ms()
         print(f"[TIMING] razorpay_qr_created       +{t2 - t1} ms")
-        
-        if not qr_resp or "image_url" not in qr_resp:
-            if ux_task and not ux_task.done():
-                ux_task.cancel()
+        upi_link = qr_resp.get("image_content")
+        if not upi_link:
             entry["status"] = "expired"
-            DB["payments"].append(entry)
+            if entry not in DB["payments"]:
+                DB["payments"].append(entry)
             save_db(DB)
-            await query.message.reply_text("❌ Failed to generate UPI QR. Please try again.")
+
+            await query.message.reply_text("❌ Failed to generate UPI intent. Try again.")
             return
-        
-        # 2️⃣ QR image download
-        t3 = now_ms()
-        # 🔥 async download (non-blocking)
-        qr_raw = await fetch_qr_image_bytes(qr_resp["image_url"])
-        t4 = now_ms()
-        print(f"[TIMING] qr_image_downloaded       +{t4 - t3} ms")
         
         # 3️⃣ QR crop
         t5 = now_ms()
         # 🧠 mandatory crop (executor)
-        qr_bytes = await loop.run_in_executor(
-           None,
-           crop_qr_bytes,
-           qr_raw
-        )
+        qr_bytes = make_qr_from_upi_link(upi_link)
         t6 = now_ms()
         print(f"[TIMING] qr_image_cropped          +{t6 - t5} ms")
         
@@ -448,8 +441,10 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         return
 
     # ---------- MANUAL ----------
-    DB["payments"].append(entry)
+    if entry not in DB["payments"]:
+        DB["payments"].append(entry)
     save_db(DB)
+
 
     caption_text = build_manual_payment_text(package, method)
 
@@ -1095,7 +1090,9 @@ def razorpay_webhook():
         package = qr_entity['notes']['package']
 
         for p in DB["payments"]:
-            if p.get("razorpay_qr_id") == qr_id and p["status"] == "pending":
+            if p.get("razorpay_qr_id") == qr_id:
+                if p["status"] != "pending":
+                    return jsonify({"status": "duplicate"}), 200
                 
                 p["status"] = "verified"
                
