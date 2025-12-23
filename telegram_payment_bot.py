@@ -44,6 +44,9 @@ SETTINGS_FILE = DATA_DIR / "settings.json"
 USERS_FILE = DATA_DIR / "users.json"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
 DB_LOCK = threading.Lock()
+ASSETS = {}
+FONTS = {}
+
 
 
 
@@ -69,6 +72,15 @@ DEFAULT_SETTINGS = {
         "remitly_how_to": os.environ.get("REMITLY_HOW_TO_PAY_LINK", "https://t.me/+8jECICY--sU2MjIx"),
     }
 }
+
+ASSETS["bhim"] = Image.open("assets/bhim.png").convert("RGBA")
+ASSETS["upi"] = Image.open("assets/upi.png").convert("RGBA")
+ASSETS["gpay"] = Image.open("assets/gpay.png").convert("RGBA")
+ASSETS["phonepe"] = Image.open("assets/phonepe.png").convert("RGBA")
+ASSETS["paytm"] = Image.open("assets/paytm.png").convert("RGBA")
+
+FONTS["bold_48"] = ImageFont.truetype("DejaVuSans-Bold.ttf", 48)
+
 
 RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "")
 RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
@@ -180,8 +192,8 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
     cd.rounded_rectangle((0, 0, CARD_W, CARD_H), radius=40, fill="white")
 
     # -------- Header Logos --------
-    bhim = Image.open("assets/bhim.png").convert("RGBA")
-    upi = Image.open("assets/upi.png").convert("RGBA")
+    bhim = ASSETS["bhim"].copy().convert("RGBA")
+    upi = ASSETS["upi"].copy().convert("RGBA")
     bhim.thumbnail((220, 80))
     upi.thumbnail((220, 80))
 
@@ -190,8 +202,8 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
 
     # -------- QR --------
     qr = qrcode.QRCode(
-        error_correction=qrcode.constants.ERROR_CORRECT_H,
-        box_size=12,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=9,
         border=4
     )
     qr.add_data(upi_link)
@@ -202,7 +214,7 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
         back_color="white"
     ).convert("RGB")
 
-    qr_img = qr_img.resize((620, 620), Image.LANCZOS)
+    qr_img = qr_img.resize((620, 620), Image.BILINEAR)
     card.paste(qr_img, ((CARD_W - 620)//2, 160))
 
     # -------- Highlighted Pay Instruction (BIGGER & CLEARER) --------
@@ -274,7 +286,14 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
     )
 
     bio = BytesIO()
-    canvas.save(bio, "PNG", optimize=True)
+    canvas.save(
+        bio,
+        "JPEG",
+        quality=82,
+        subsampling=1,
+        optimize=False
+    )
+
     bio.seek(0)
     return bio
 
@@ -470,7 +489,12 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         # 3️⃣ QR crop
         t5 = now_ms()
         # 🧠 mandatory crop (executor)
-        qr_bytes = make_upi_qr_card_style(upi_link)
+        qr_bytes = await asyncio.get_running_loop().run_in_executor(
+            None,
+            make_upi_qr_card_style,
+            upi_link
+        )
+
         t6 = now_ms()
         print(f"[TIMING] qr_image_cropped          +{t6 - t5} ms")
         
