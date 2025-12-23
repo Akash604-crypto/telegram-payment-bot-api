@@ -16,6 +16,7 @@ import time
 import hmac
 import hashlib
 import threading
+import qrcode
 import asyncio
 import signal
 from typing import Dict, Any
@@ -165,29 +166,30 @@ def rounded_rect(draw, xy, radius, fill):
     x1, y1, x2, y2 = xy
     draw.rounded_rectangle(xy, radius=radius, fill=fill)
 
-def make_upi_qr_card_fast(image_content_base64: str) -> BytesIO:
-    """
-    Ultra-fast, pixel-perfect QR render
-    - Uses Razorpay QR directly
-    - Fits EXACT placeholder
-    """
-
-    # 🔒 EXACT placeholder box (adjust ONCE)
+def make_upi_qr_card_fast(upi_intent: str) -> BytesIO:
+    # QR placeholder box (do NOT change now)
     QR_LEFT = 170
     QR_TOP = 260
-    QR_RIGHT = 910
-    QR_BOTTOM = 1000
-
-    QR_SIZE = QR_RIGHT - QR_LEFT  # square
+    QR_SIZE = 740
 
     base = ASSETS["qr_layout"].copy()
 
-    # ✅ Decode Razorpay QR image (NO re-generation)
-    qr_raw = base64.b64decode(image_content_base64)
-    qr_img = Image.open(BytesIO(qr_raw)).convert("RGB")
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_Q,
+        box_size=10,
+        border=2
+    )
+    qr.add_data(upi_intent)
+    qr.make(fit=True)
+
+    qr_img = qr.make_image(
+        fill_color="black",
+        back_color="white"
+    ).convert("RGB")
+
     qr_img = qr_img.resize((QR_SIZE, QR_SIZE), Image.BICUBIC)
 
-    # ✅ Paste perfectly inside card
     base.paste(qr_img, (QR_LEFT, QR_TOP))
 
     bio = BytesIO()
