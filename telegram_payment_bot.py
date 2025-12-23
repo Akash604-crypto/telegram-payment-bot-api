@@ -183,69 +183,92 @@ def rounded_rect(draw, xy, radius, fill):
     draw.rounded_rectangle(xy, radius=radius, fill=fill)
 
 def make_upi_qr_card_fast(upi_link: str) -> BytesIO:
-    CANVAS_W, CANVAS_H = 720, 900
+    CANVAS_W, CANVAS_H = 720, 980
 
+    # Soft background
     canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), "#eef3f9")
-    card = Image.new("RGB", (680, 840), "white")
 
+    # Card
+    CARD_W, CARD_H = 660, 900
+    card = Image.new("RGB", (CARD_W, CARD_H), "white")
     cd = ImageDraw.Draw(card)
-    cd.rounded_rectangle((0, 0, 680, 840), radius=28, fill="white")
+    cd.rounded_rectangle(
+        (0, 0, CARD_W, CARD_H),
+        radius=32,
+        fill="white"
+    )
 
-    # Header logos
+    # ───────── HEADER ─────────
     bhim = ASSETS["bhim"].copy()
     upi = ASSETS["upi"].copy()
-    bhim.thumbnail((200, 70))
-    upi.thumbnail((200, 70))
 
-    card.paste(bhim, (40, 25), bhim)
-    card.paste(upi, (680 - upi.width - 40, 25), upi)
+    bhim.thumbnail((180, 60))
+    upi.thumbnail((180, 60))
 
-    # FAST QR (LOW COST)
+    card.paste(bhim, (40, 30), bhim)
+    card.paste(upi, (CARD_W - upi.width - 40, 30), upi)
+
+    # ───────── QR CODE ─────────
     qr = qrcode.QRCode(
         version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_L,  # FAST
-        box_size=6,                                         # FAST
+        error_correction=qrcode.constants.ERROR_CORRECT_Q,  # better scan reliability
+        box_size=8,
         border=2
     )
     qr.add_data(upi_link)
     qr.make(fit=True)
 
-    qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-    qr_img = qr_img.resize((360, 360), Image.BILINEAR)  # FAST resize
+    qr_img = qr.make_image(
+        fill_color="black",
+        back_color="white"
+    ).convert("RGB")
 
-    card.paste(qr_img, ((680 - 360)//2, 120))
+    qr_size = 440
+    qr_img = qr_img.resize((qr_size, qr_size), Image.BICUBIC)
 
-    # Text
+    card.paste(
+        qr_img,
+        ((CARD_W - qr_size) // 2, 140)
+    )
+
+    # ───────── CTA TEXT ─────────
     cd.text(
-        (390, 680),
+        (CARD_W // 2, 620),
         "SCAN & PAY WITH ANY UPI APP",
-        fill="#1f2d3d",
+        fill="#0f172a",
         anchor="mm",
         font=ASSETS["font"]
     )
 
-    # Footer logos
-    logos = [ASSETS["gpay"], ASSETS["phonepe"], ASSETS["paytm"]]
-    x = 390 - 200
-    for l in logos:
-        img = l.copy()
-        img.thumbnail((100, 42))
-        card.paste(img, (x, 730), img)
-        x += 150
+    # ───────── FOOTER LOGOS ─────────
+    logos = [
+        ASSETS["gpay"],
+        ASSETS["phonepe"],
+        ASSETS["paytm"]
+    ]
 
-    canvas.paste(card, ((720 - 680)//2, 30))
+    x = (CARD_W // 2) - 210
+    for logo in logos:
+        img = logo.copy()
+        img.thumbnail((120, 50))
+        card.paste(img, (x, 700), img)
+        x += 160
+
+    # ───────── COMPOSE ─────────
+    canvas.paste(
+        card,
+        ((CANVAS_W - CARD_W) // 2, 40)
+    )
 
     bio = BytesIO()
     canvas.save(bio, "PNG", optimize=True)
     bio.seek(0)
-    # 🔥 FREE MEMORY
-    del qr_img
-    del qr
-    del card
-    del canvas
-    del bhim
-    del upi
+
+    # Cleanup
+    del qr_img, qr, card, canvas, bhim, upi
+
     return bio
+
 
 
 # -------------------- Bot Handlers --------------------
@@ -1277,7 +1300,13 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
 async def post_init(application):
     global BOT_LOOP
     BOT_LOOP = asyncio.get_running_loop()
-    asyncio.create_task(reminder_loop())
+    application.bot_data["reminder_task"] = asyncio.create_task(reminder_loop())
+
+async def shutdown(application):
+    task = application.bot_data.get("reminder_task")
+    if task:
+        task.cancel()
+
 
 
 def run_flask():
@@ -1701,6 +1730,8 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("broadcast_buyers", broadcast_buyers))
     application.add_handler(CommandHandler("broadcast_nonbuyers", broadcast_nonbuyers))
     application.add_handler(CommandHandler("setremitlyhowto", setremitlyhowto))
+    application.post_shutdown(shutdown)
+
 
     # CALLBACKS
     application.add_handler(
