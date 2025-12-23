@@ -182,6 +182,11 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
     CARD_W, CARD_H = 900, 1050
 
     canvas = gradient_bg(CANVAS_W, CANVAS_H)
+    
+        # -------- Card --------
+    card = Image.new("RGB", (CARD_W, CARD_H), "white")
+    cd = ImageDraw.Draw(card)
+    cd.rounded_rectangle((0, 0, CARD_W, CARD_H), radius=40, fill="white")
 
     # -------- Shadow --------
     shadow = Image.new("RGBA", (CARD_W + 40, CARD_H + 40), (0, 0, 0, 0))
@@ -196,11 +201,11 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
         ((CANVAS_W - CARD_W)//2 - 20, 160),
         shadow
     )
+    canvas.paste(
+        card,
+        ((CANVAS_W - CARD_W)//2, 160)
+    )
 
-    # -------- Card --------
-    card = Image.new("RGB", (CARD_W, CARD_H), "white")
-    cd = ImageDraw.Draw(card)
-    cd.rounded_rectangle((0, 0, CARD_W, CARD_H), radius=40, fill="white")
 
     # -------- Header Logos --------
     bhim = Image.open("assets/bhim.png").convert("RGBA")
@@ -260,6 +265,7 @@ def make_upi_qr_card_style(upi_link: str) -> BytesIO:
         font=font
     )
 
+    
 
 
     # -------- Footer (Outside Card) --------
