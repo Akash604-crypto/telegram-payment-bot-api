@@ -6,12 +6,12 @@ MANUAL: Crypto & Remitly still require Admin Approval.
 """
 
 import os
+import base64
 import json
 from PIL import Image, ImageDraw, ImageFont
 from pathlib import Path
 from io import BytesIO
 import requests
-import qrcode
 import time
 import hmac
 import hashlib
@@ -165,50 +165,34 @@ def rounded_rect(draw, xy, radius, fill):
     x1, y1, x2, y2 = xy
     draw.rounded_rectangle(xy, radius=radius, fill=fill)
 
-def make_upi_qr_card_fast(upi_link: str) -> BytesIO:
+def make_upi_qr_card_fast(image_content_base64: str) -> BytesIO:
     """
-    Fastest possible QR renderer:
-    - Uses pre-designed qr_layout.png
-    - Only generates QR
-    - Pastes QR into fixed area
+    Ultra-fast, pixel-perfect QR render
+    - Uses Razorpay QR directly
+    - Fits EXACT placeholder
     """
 
-    # ---- CONFIG (adjust once if needed) ----
-    QR_SIZE = 440        # QR size
-    QR_X = 140           # left offset inside layout
-    QR_Y = 210           # top offset inside layout
+    # 🔒 EXACT placeholder box (adjust ONCE)
+    QR_LEFT = 170
+    QR_TOP = 260
+    QR_RIGHT = 910
+    QR_BOTTOM = 1000
 
-    # Copy base layout
+    QR_SIZE = QR_RIGHT - QR_LEFT  # square
+
     base = ASSETS["qr_layout"].copy()
 
-    # Generate QR (FAST + reliable)
-    qr = qrcode.QRCode(
-        version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_Q,
-        box_size=10,
-        border=2
-    )
-    qr.add_data(upi_link)
-    qr.make(fit=True)
-
-    qr_img = qr.make_image(
-        fill_color="black",
-        back_color="white"
-    ).convert("RGB")
-
+    # ✅ Decode Razorpay QR image (NO re-generation)
+    qr_raw = base64.b64decode(image_content_base64)
+    qr_img = Image.open(BytesIO(qr_raw)).convert("RGB")
     qr_img = qr_img.resize((QR_SIZE, QR_SIZE), Image.BICUBIC)
 
-    # Paste QR into layout
-    base.paste(qr_img, (QR_X, QR_Y))
+    # ✅ Paste perfectly inside card
+    base.paste(qr_img, (QR_LEFT, QR_TOP))
 
-    # Output
     bio = BytesIO()
     base.save(bio, "PNG", optimize=True)
     bio.seek(0)
-
-    # Cleanup
-    del qr_img, qr, base
-
     return bio
 
 
@@ -411,8 +395,9 @@ async def handle_payment(method, package, query, context, from_reminder=False):
             qr_bytes = await loop.run_in_executor(
                 None,
                 make_upi_qr_card_fast,
-                upi_link
+                qr_resp["image_content"]
             )
+
         except Exception as e:
             print("QR render error:", e)
             await query.message.reply_text(
