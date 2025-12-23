@@ -51,14 +51,14 @@ ASSETS = {}
 
 def preload_assets():
     try:
-        ASSETS["bhim"] = Image.open(ASSETS_DIR / "bhim.png").convert("RGB")
-        ASSETS["upi"] = Image.open(ASSETS_DIR / "upi.png").convert("RGB")
-        ASSETS["gpay"] = Image.open(ASSETS_DIR / "gpay.png").convert("RGB")
-        ASSETS["phonepe"] = Image.open(ASSETS_DIR / "phonepe.png").convert("RGB")
-        ASSETS["paytm"] = Image.open(ASSETS_DIR / "paytm.png").convert("RGB")
+        ASSETS["bhim"] = Image.open(ASSETS_DIR / "bhim.png").convert("RGBA")
+        ASSETS["upi"] = Image.open(ASSETS_DIR / "upi.png").convert("RGBA")
+        ASSETS["gpay"] = Image.open(ASSETS_DIR / "gpay.png").convert("RGBA")
+        ASSETS["phonepe"] = Image.open(ASSETS_DIR / "phonepe.png").convert("RGBA")
+        ASSETS["paytm"] = Image.open(ASSETS_DIR / "paytm.png").convert("RGBA")
     except Exception as e:
         print("❌ Asset load failed:", e)
-        sys.exit(1)   # correct: fail fast
+        sys.exit(1)
 
     try:
         ASSETS["font"] = ImageFont.truetype(
@@ -441,11 +441,19 @@ async def handle_payment(method, package, query, context, from_reminder=False):
         t5 = now_ms()
         # 🧠 mandatory crop (executor)
         loop = asyncio.get_running_loop()
-        qr_bytes = await loop.run_in_executor(
-            None,
-            make_upi_qr_card_fast,
-            upi_link
-        )
+        try:
+            qr_bytes = await loop.run_in_executor(
+                None,
+                make_upi_qr_card_fast,
+                upi_link
+            )
+        except Exception as e:
+            print("QR render error:", e)
+            await query.message.reply_text(
+                "❌ QR rendering failed. Please try again."
+            )
+            return
+
 
         t6 = now_ms()
         print(f"[TIMING] qr_image_cropped          +{t6 - t5} ms")
