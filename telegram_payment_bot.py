@@ -46,35 +46,18 @@ REMINDERS_FILE = DATA_DIR / "reminders.json"
 DB_LOCK = threading.Lock()
 BASE_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = BASE_DIR / "assets"
-# ---------- ASSET CACHE ----------
 ASSETS = {}
 
 def preload_assets():
     try:
-        ASSETS["bhim"] = Image.open(ASSETS_DIR / "bhim.png").convert("RGBA")
-        ASSETS["upi"] = Image.open(ASSETS_DIR / "upi.png").convert("RGBA")
-        ASSETS["gpay"] = Image.open(ASSETS_DIR / "gpay.png").convert("RGBA")
-        ASSETS["phonepe"] = Image.open(ASSETS_DIR / "phonepe.png").convert("RGBA")
-        ASSETS["paytm"] = Image.open(ASSETS_DIR / "paytm.png").convert("RGBA")
+        ASSETS["qr_layout"] = Image.open(
+            ASSETS_DIR / "qr_layout.png"
+        ).convert("RGBA")
     except Exception as e:
-        print("❌ Asset load failed:", e)
+        print("❌ Failed to load qr_layout.png:", e)
         sys.exit(1)
 
-    try:
-        ASSETS["font"] = ImageFont.truetype(
-            ASSETS_DIR / "Inter-Bold.ttf", 38
-        )
-    except Exception as e:
-        print("⚠️ Font fallback:", e)
-        ASSETS["font"] = ImageFont.load_default()
-
-
-
 preload_assets()
-
-
-
-
 
 
 DEFAULT_SETTINGS = {
@@ -183,36 +166,26 @@ def rounded_rect(draw, xy, radius, fill):
     draw.rounded_rectangle(xy, radius=radius, fill=fill)
 
 def make_upi_qr_card_fast(upi_link: str) -> BytesIO:
-    CANVAS_W, CANVAS_H = 720, 980
+    """
+    Fastest possible QR renderer:
+    - Uses pre-designed qr_layout.png
+    - Only generates QR
+    - Pastes QR into fixed area
+    """
 
-    # Soft background
-    canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), "#eef3f9")
+    # ---- CONFIG (adjust once if needed) ----
+    QR_SIZE = 440        # QR size
+    QR_X = 140           # left offset inside layout
+    QR_Y = 210           # top offset inside layout
 
-    # Card
-    CARD_W, CARD_H = 660, 900
-    card = Image.new("RGB", (CARD_W, CARD_H), "white")
-    cd = ImageDraw.Draw(card)
-    cd.rounded_rectangle(
-        (0, 0, CARD_W, CARD_H),
-        radius=32,
-        fill="white"
-    )
+    # Copy base layout
+    base = ASSETS["qr_layout"].copy()
 
-    # ───────── HEADER ─────────
-    bhim = ASSETS["bhim"].copy()
-    upi = ASSETS["upi"].copy()
-
-    bhim.thumbnail((180, 60))
-    upi.thumbnail((180, 60))
-
-    card.paste(bhim, (40, 30), bhim)
-    card.paste(upi, (CARD_W - upi.width - 40, 30), upi)
-
-    # ───────── QR CODE ─────────
+    # Generate QR (FAST + reliable)
     qr = qrcode.QRCode(
         version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_Q,  # better scan reliability
-        box_size=8,
+        error_correction=qrcode.constants.ERROR_CORRECT_Q,
+        box_size=10,
         border=2
     )
     qr.add_data(upi_link)
@@ -223,51 +196,21 @@ def make_upi_qr_card_fast(upi_link: str) -> BytesIO:
         back_color="white"
     ).convert("RGB")
 
-    qr_size = 440
-    qr_img = qr_img.resize((qr_size, qr_size), Image.BICUBIC)
+    qr_img = qr_img.resize((QR_SIZE, QR_SIZE), Image.BICUBIC)
 
-    card.paste(
-        qr_img,
-        ((CARD_W - qr_size) // 2, 140)
-    )
+    # Paste QR into layout
+    base.paste(qr_img, (QR_X, QR_Y))
 
-    # ───────── CTA TEXT ─────────
-    cd.text(
-        (CARD_W // 2, 620),
-        "SCAN & PAY WITH ANY UPI APP",
-        fill="#0f172a",
-        anchor="mm",
-        font=ASSETS["font"]
-    )
-
-    # ───────── FOOTER LOGOS ─────────
-    logos = [
-        ASSETS["gpay"],
-        ASSETS["phonepe"],
-        ASSETS["paytm"]
-    ]
-
-    x = (CARD_W // 2) - 210
-    for logo in logos:
-        img = logo.copy()
-        img.thumbnail((120, 50))
-        card.paste(img, (x, 700), img)
-        x += 160
-
-    # ───────── COMPOSE ─────────
-    canvas.paste(
-        card,
-        ((CANVAS_W - CARD_W) // 2, 40)
-    )
-
+    # Output
     bio = BytesIO()
-    canvas.save(bio, "PNG", optimize=True)
+    base.save(bio, "PNG", optimize=True)
     bio.seek(0)
 
     # Cleanup
-    del qr_img, qr, card, canvas, bhim, upi
+    del qr_img, qr, base
 
     return bio
+
 
 
 
