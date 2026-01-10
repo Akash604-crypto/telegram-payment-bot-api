@@ -493,11 +493,37 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
     user = query.from_user
+    
+    
+    # ----- BACK TO PACKAGES -----
+    if data == "back_packages":
+        clear_user_reminders(user.id)
+        await cleanup_previous_pending_payments(user.id, context)
+
+        await query.message.edit_text(
+            f"👋 Welcome {user.first_name or 'there'}\n\n"
+            "🔐 Secure & Instant Access Bot.\n\n"
+            "🧾 How it works:\n"
+            "1️⃣ Choose a package\n"
+            "2️⃣ Pay via UPI / Crypto / Remitly\n"
+            "3️⃣ Get instant access (UPI)\n\n"
+            "👇 Select a package to continue",
+            reply_markup=main_keyboard(),
+            parse_mode="Markdown"
+        )
+        return
+
 
     # ----- HELP -----
     if data == "help":
-        await query.message.reply_text("🆘 **Need help?**\n\nIf payment failed or you're stuck,\ncontact support here 👇\n👉 @Dark123222_bot"),
-        parse_mode="Markdown"
+        await query.message.edit_text(
+            "🆘 **Need help?**\n\n"
+            "If payment failed or you're stuck,\n"
+            "contact support here 👇\n"
+            "👉 @Dark123222_bot",
+            parse_mode="Markdown"
+        )
+
         return
 
     # ----- STATUS BUTTON -----
@@ -548,9 +574,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                   callback_data=f"pay_crypto:{package}")],
             [InlineKeyboardButton(f"🌍 Remitly - ₹{SETTINGS['prices'][package]['remitly']}",
                                   callback_data=f"pay_remitly:{package}")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="cancel")],
+            [
+                InlineKeyboardButton("⬅️ Back", callback_data="back_packages"),
+                InlineKeyboardButton("❌ Cancel", callback_data="cancel")
+             
+            ],
         ]
-        await query.message.reply_text(
+        await query.message.edit_text(
             f"💳 **Choose Payment Method for {package.upper()}**\n\n"
             "⚡ UPI → Instant & Auto-Approved\n"
             "🕒 Crypto / Remitly → Manual verification\n",
@@ -593,7 +623,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         save_db(DB)
 
-        await query.message.reply_text(
+        await query.message.edit_text(
             "❌ Payment cancelled.\n\n"
             "No worries 🙂\n"
             "You can restart anytime using /start"
@@ -1417,7 +1447,7 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Determine where to reply
     if update.callback_query:
         user_id = update.callback_query.from_user.id
-        reply_func = update.callback_query.message.reply_text
+        reply_func = update.callback_query.message.edit_text
     else:
         user_id = update.effective_user.id
         reply_func = update.message.reply_text
@@ -1684,7 +1714,8 @@ if __name__ == "__main__":
     application.add_handler(
         CallbackQueryHandler(
             callback_handler,
-            pattern="^(choose_.*|pay_.*|reminder_pay_.*|cancel|help|status_btn)$"
+            pattern="^(choose_.*|pay_.*|reminder_pay_.*|cancel|help|status_btn|back_packages)$"
+
         )
     )
     application.add_handler(CallbackQueryHandler(admin_review_handler, pattern="^(approve|decline):"))
