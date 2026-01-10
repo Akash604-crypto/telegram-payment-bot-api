@@ -496,7 +496,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ----- HELP -----
     if data == "help":
-        await query.message.reply_text("🆘 Need help?\n\nIf payment failed or you're stuck,\ncontact support here 👇\n👉 @Dark123222_bot")
+        await query.message.reply_text("🆘 **Need help?**\n\nIf payment failed or you're stuck,\ncontact support here 👇\n👉 @Dark123222_bot"),
+        parse_mode="Markdown"
         return
 
     # ----- STATUS BUTTON -----
@@ -714,7 +715,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # -------- SEND UNDER REVIEW MESSAGE TO USER ----------
                 return await context.bot.send_message(
                     chat_id=user_id,
-                    text="⏳ **Payment Under Review**\n\nYour payment proof is received.\nAdmin is verifying it — please wait.\n\nYou’ll get access automatically once approved ✅"
+                    text="⏳ **Payment Under Review**\n\nYour payment proof is received.\nAdmin is verifying it — please wait.\n\nYou’ll get access automatically once approved ✅",
+                    parse_mode="Markdown"
                 )
 
 
@@ -1074,7 +1076,7 @@ def build_manual_payment_text(package, method):
         return (
             f"💱 **Crypto Payment Instructions**\n\n"
             f"Amount: **${usd} USDT**\n"
-            f"Network: **{pi['crypto_network']}**\n\n"
+            f"Network: **`{pi['crypto_network']}`**\n\n"
             f"🔐 **Wallet Address:**\n`{pi['crypto_address']}`\n\n"
             f"📸 After payment, send a *payment screenshot* here.\n"
             f"⏳ Your payment session is active. Complete it before the timer ends."
@@ -1087,14 +1089,14 @@ def build_manual_payment_text(package, method):
         f"Amount to Send: **₹{amount_inr} INR**\n\n"
         f"📘 How to Pay Guide:\n{pi['remitly_how_to']}\n\n"
         f"1️⃣ Create an account on *Remitly* (App / Website)\n"
-        f"2️⃣ Select destination: **India** and enter amount\n"
-        f"3️⃣ Choose Delivery Method: **Bank**\n"
-        f"4️⃣ Recipient Name: **Govind Mahto**\n"
-        f"5️⃣ Bank Account No: **002020391365887**\n"
-        f"5️⃣ IFSC Code: **JIOP0000001**\n"
-        f"6️⃣ Reason for Payment: **Family Support**\n\n"
-        f"📸 After sending payment, upload a *payment screenshot* here.\n"
-        f"⏳ Your payment session is active. Complete it before the timer ends."
+        f"2️⃣ Select destination: **`India`** and enter amount\n"
+        f"3️⃣ Choose Delivery Method: **`Bank`**\n"
+        f"4️⃣ Recipient Name: **`Govind Mahto`**\n"
+        f"5️⃣ Bank Account No: **`002020391365887`**\n"
+        f"5️⃣ IFSC Code: **`JIOP0000001`**\n"
+        f"6️⃣ Reason for Payment: **`Family Support`**\n\n"
+        f"📸 **After sending payment, upload a *payment screenshot* here.**\n"
+        f"⏳ **Your payment session is active. Complete it before the timer ends.**"
     )
 
 
@@ -1210,7 +1212,8 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
                 await app_instance.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
-                    text=new_text
+                    text=new_text,
+                    parse_mode="Markdown"
                 )
         except Exception as e:
             print("Ignored error:", e)
@@ -1234,7 +1237,8 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
         try:
             await app_instance.bot.send_message(
                 chat_id=p["user_id"],
-                text="⌛ **Payment session expired. Please try again.**"
+                text="⌛ **Payment session expired. Please try again.**",
+                parse_mode="Markdown"
             )
         except Exception as e:
             print("Ignored error:", e)
