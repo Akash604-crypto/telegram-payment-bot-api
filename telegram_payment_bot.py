@@ -517,11 +517,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ----- HELP -----
     if data == "help":
         await query.message.edit_text(
-            "🆘 **Need help?**\n\n"
-            "If payment failed or you're stuck,\n"
+            "🆘 Need help?\n\n"
+            "If payment failed or you're stuck,\n\n"
             "contact support here 👇\n"
-            "👉 @Dark123222_bot",
-            parse_mode="Markdown"
+            "👉 @Dark123222_bot"
+            
         )
 
         return
