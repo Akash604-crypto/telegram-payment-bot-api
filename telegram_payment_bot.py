@@ -87,6 +87,8 @@ RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
 RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
 
 BOT_LOOP = None
+BOT = None
+
 
 
 def load_users():
@@ -257,6 +259,12 @@ def get_nonbuyer_ids():
 
 app = Flask(__name__)
 TELEGRAM_TOKEN = os.environ.get("BOT_TOKEN")
+
+def back_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Back", callback_data="back_packages")]
+    ])
+
 
 def main_keyboard():
     kb = [
@@ -514,17 +522,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
+    
     # ----- HELP -----
     if data == "help":
-        await query.message.edit_text(
-            "🆘 Need help?\n\n"
-            "If payment failed or you're stuck,\n\n"
-            "contact support here 👇\n"
-            "👉 @Dark123222_bot"
-            
-        )
+        try:
+            await query.message.edit_text(
+                "🆘 Need help?\n\n"
+                "If payment failed or you're stuck,\n\n"
+                "contact support here 👇\n"
+                "👉 @Dark123222_bot",
+                reply_markup=back_keyboard()
+            )
+        except Exception:
+            pass
 
         return
+
 
     # ----- STATUS BUTTON -----
     if data == "status_btn":
@@ -1079,7 +1092,7 @@ async def send_link_to_user(user_id: int, package: str):
             f"🔹 DARK Access:\n{dark_link}"
         )
 
-        await app_instance.bot.send_message(
+        await BOT.send_message(
             chat_id=user_id,
             text=text,
         )
@@ -1090,7 +1103,7 @@ async def send_link_to_user(user_id: int, package: str):
     if not link:
         link = "Link not set. Contact admin."
 
-    await app_instance.bot.send_message(
+    await BOT.send_message(
         chat_id=user_id,
         text=f"🎉 Payment Successful!\n\n✅ Your payment is verified\n🔓 Access Granted Below:\n\n ({package.upper()}):\n{link}"
     )
@@ -1188,7 +1201,7 @@ def razorpay_webhook():
                     msg_id = p.get("message_id")
                     if chat_id and msg_id:
                         asyncio.run_coroutine_threadsafe(
-                            app_instance.bot.delete_message(chat_id, msg_id),
+                            BOT.delete_message(chat_id, msg_id),
                             BOT_LOOP
                         )
                 except Exception as e:
@@ -1199,7 +1212,7 @@ def razorpay_webhook():
                     if p.get("loading_msg_ids"):
                         for mid in p["loading_msg_ids"]:
                             asyncio.run_coroutine_threadsafe(
-                                app_instance.bot.delete_message(p["user_id"], mid),
+                                BOT.delete_message(p["user_id"], mid),
                                 BOT_LOOP
                             )
                 except Exception as e:
@@ -1231,7 +1244,7 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
             if p["method"] == "upi":
 
                 # UPI → edit caption of QR photo
-                await app_instance.bot.edit_message_caption(
+                await BOT.edit_message_caption(
                     chat_id=chat_id,
                     message_id=message_id,
                     caption=new_text,
@@ -1239,7 +1252,7 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
                 )
             else:
                 # Crypto & Remitly → edit text message
-                await app_instance.bot.edit_message_text(
+                await BOT.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
                     text=new_text,
@@ -1259,13 +1272,13 @@ async def start_countdown(payment_id: str, chat_id: int, message_id: int, second
 
         # Delete payment message
         try:
-            await app_instance.bot.delete_message(chat_id, message_id)
+            await BOT.delete_message(chat_id, message_id)
         except Exception as e:
             print("Ignored error:", e)
 
         # Notify user
         try:
-            await app_instance.bot.send_message(
+            await BOT.send_message(
                 chat_id=p["user_id"],
                 text="⌛ **Payment session expired. Please try again.**",
                 parse_mode="Markdown"
@@ -1444,18 +1457,24 @@ async def reminder_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Determine where to reply
+    # Decide reply method
     if update.callback_query:
-        user_id = update.callback_query.from_user.id
-        reply_func = update.callback_query.message.edit_text
+        query = update.callback_query
+        user_id = query.from_user.id
+        reply_func = query.message.edit_text
+        is_callback = True
     else:
         user_id = update.effective_user.id
         reply_func = update.message.reply_text
+        is_callback = False
 
     # Find latest payment
     user_payments = [p for p in DB["payments"] if p["user_id"] == user_id]
     if not user_payments:
-        return await reply_func("❌ No payment found. Start with /start")
+        return await reply_func(
+            "❌ No payment found.\nStart with /start",
+            reply_markup=back_keyboard() if is_callback else None
+        )
 
     p = user_payments[-1]
 
@@ -1468,14 +1487,35 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     text = (
-        "📄 **Your Payment Status**\n\n"
-        f"📦 Package: *{p['package'].upper()}*\n"
-        f"💳 Method: *{p['method']}*\n"
+        "📄 Your Payment Status\n\n"
+        f"📦 Package: {p['package'].upper()}\n"
+        f"💳 Method: {p['method']}\n"
         f"🧾 Status: {status_map.get(p['status'], 'Unknown')}\n"
         f"⏱ Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(p['created_at']))}"
     )
+    
+    # 🔓 SHOW ACCESS LINKS IF VERIFIED
+    if p["status"] == "verified":
+        if p["package"] == "both":
+            vip = SETTINGS["links"].get("vip", "Not set")
+            dark = SETTINGS["links"].get("dark", "Not set")
+            text += (
+                "\n\n🔓 Your Access Links\n"
+                f"🔹 VIP:\n{vip}\n\n"
+                f"🔹 DARK:\n{dark}"
+            )
+        else:
+            link = SETTINGS["links"].get(p["package"], "Not set")
+            text += (
+                "\n\n🔓 **Your Access Link**\n"
+                f"{link}"
+            )
 
-    await reply_func(text, parse_mode="Markdown")
+    await reply_func(
+        text,
+        reply_markup=back_keyboard() if is_callback else None
+    )
+
     
 async def broadcast_to_users(bot, user_ids, update, context):
     delivered = 0
@@ -1546,19 +1586,19 @@ async def broadcast_to_users(bot, user_ids, update, context):
 async def broadcast_all(update, context):
     if update.effective_chat.id != SETTINGS["admin_chat_id"]:
         return
-    await broadcast_to_users(app_instance.bot, USERS, update, context)
+    await broadcast_to_users(BOT, USERS, update, context)
     
     
 async def broadcast_buyers(update, context):
     if update.effective_chat.id != SETTINGS["admin_chat_id"]:
         return
-    await broadcast_to_users(app_instance.bot, get_buyer_ids(), update, context)
+    await broadcast_to_users(BOT, get_buyer_ids(), update, context)
     
     
 async def broadcast_nonbuyers(update, context):
     if update.effective_chat.id != SETTINGS["admin_chat_id"]:
         return
-    await broadcast_to_users(app_instance.bot, get_nonbuyer_ids(), update, context)
+    await broadcast_to_users(BOT, get_nonbuyer_ids(), update, context)
 
 async def setremitlyhowto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != SETTINGS["admin_chat_id"]:
@@ -1660,7 +1700,7 @@ async def reminder_loop():
                             [InlineKeyboardButton("🌍 Remitly", callback_data=f"reminder_pay_remitly:{r['package']}")]
                         ]
 
-                    await app_instance.bot.send_message(
+                    await BOT.send_message(
                         r["user_id"],
                         msg.format(pkg=r["package"].upper()),
                         reply_markup=InlineKeyboardMarkup(buttons),
@@ -1691,6 +1731,7 @@ if __name__ == "__main__":
     )
 
     app_instance = application
+    BOT = application.bot
 
     # USER COMMANDS
     application.add_handler(CommandHandler("start", start_handler))
@@ -1714,7 +1755,7 @@ if __name__ == "__main__":
     application.add_handler(
         CallbackQueryHandler(
             callback_handler,
-            pattern="^(choose_.*|pay_.*|reminder_pay_.*|cancel|help|status_btn|back_packages)$"
+            pattern="^(choose_.*|pay_.*|reminder_pay_.*|cancel|help|status_.*|back_packages)$"
 
         )
     )
