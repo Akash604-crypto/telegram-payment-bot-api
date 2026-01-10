@@ -550,10 +550,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("❌ Cancel", callback_data="cancel")],
         ]
         await query.message.reply_text(
-            f"💳 Choose Payment Method for {package.upper()}\n\n",
-            "⚡ UPI → Instant & Auto-Approved\n",
+            f"💳 **Choose Payment Method for {package.upper()}**\n\n"
+            "⚡ UPI → Instant & Auto-Approved\n"
             "🕒 Crypto / Remitly → Manual verification\n",
-            reply_markup=InlineKeyboardMarkup(kb)
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="Markdown"
         )
         return
 
@@ -713,7 +714,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # -------- SEND UNDER REVIEW MESSAGE TO USER ----------
                 return await context.bot.send_message(
                     chat_id=user_id,
-                    text="⏳ **Payment Under Review**\n\\nYour payment proof is received.\nAdmin is verifying it — please wait.\n\nYou’ll get access automatically once approved ✅"
+                    text="⏳ **Payment Under Review**\n\nYour payment proof is received.\nAdmin is verifying it — please wait.\n\nYou’ll get access automatically once approved ✅"
                 )
 
 
