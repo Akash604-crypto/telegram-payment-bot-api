@@ -282,8 +282,13 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = user.first_name or "there"
 
     text = (
-    f"Welcome {name} 👋\n\n"
-    "Select a package below to proceed with secure access."
+    f"👋 Welcome {name}\n\n"
+    "🔐 Secure & Instant Access Bot.\n\n"
+    "🧾 How it works:\n"
+    "1️⃣ Choose a package\n"
+    "2️⃣ Pay via UPI / Crypto / Remitly\n"
+    "3️⃣ Get instant access (UPI)\n\n"
+    "👇 Select a package to continue"
     )
 
 
@@ -351,8 +356,9 @@ async def handle_payment(method, package, query, context, from_reminder=False):
 
         caption_text = (
             f"✅ **SCAN & PAY ₹{amount}**\n"
-            f"• Auto-detect payment\n"
-            f"• Do NOT send screenshot\n"
+            f"• Instant auto-approval\n"
+            f"• No screenshots needed\n"
+            f"• Stay on this screen until payment completes ⏳"
         )
         loop = asyncio.get_running_loop()
         t0 = now_ms()
@@ -490,7 +496,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ----- HELP -----
     if data == "help":
-        await query.message.reply_text("Contact help: @Dark123222_bot")
+        await query.message.reply_text("🆘 Need help?\n\nIf payment failed or you're stuck,\ncontact support here 👇\n👉 @Dark123222_bot")
         return
 
     # ----- STATUS BUTTON -----
@@ -544,7 +550,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("❌ Cancel", callback_data="cancel")],
         ]
         await query.message.reply_text(
-            f"Select Payment Method for {package.upper()}",
+            f"💳 Choose Payment Method for {package.upper()}\n\n",
+            "⚡ UPI → Instant & Auto-Approved\n",
+            "🕒 Crypto / Remitly → Manual verification\n",
             reply_markup=InlineKeyboardMarkup(kb)
         )
         return
@@ -584,7 +592,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_db(DB)
 
         await query.message.reply_text(
-            "❌ Payment cancelled.\n\nUse /start to begin again."
+            "❌ Payment cancelled.\n\n"
+            "No worries 🙂\n"
+            "You can restart anytime using /start"
         )
         return
 
@@ -703,7 +713,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # -------- SEND UNDER REVIEW MESSAGE TO USER ----------
                 return await context.bot.send_message(
                     chat_id=user_id,
-                    text="⏳ **Payment Under Review**\nAdmin is verifying your proof..."
+                    text="⏳ **Payment Under Review**\n\\nYour payment proof is received.\nAdmin is verifying it — please wait.\n\nYou’ll get access automatically once approved ✅"
                 )
 
 
@@ -1030,10 +1040,10 @@ async def send_link_to_user(user_id: int, package: str):
             dark_link = "DARK link not set. Contact admin."
 
         text = (
-            "🎉 **Access Granted: BOTH Package**\n\n"
+            "🎉 Payment Successful!\n\n✅ Your payment is verified\n🔓 Access Granted: BOTH Package\n\n"
             "Here are your links:\n\n"
-            f"🔹 **VIP Access:**\n{vip_link}\n\n"
-            f"🔹 **DARK Access:**\n{dark_link}"
+            f"🔹 VIP Access:\n{vip_link}\n\n"
+            f"🔹 DARK Access:\n{dark_link}"
         )
 
         await app_instance.bot.send_message(
@@ -1049,7 +1059,7 @@ async def send_link_to_user(user_id: int, package: str):
 
     await app_instance.bot.send_message(
         chat_id=user_id,
-        text=f"✅ Access Granted ({package.upper()}):\n{link}"
+        text=f"🎉 Payment Successful!\n\n✅ Your payment is verified\n🔓 Access Granted Below:\n\n ({package.upper()}):\n{link}"
     )
 
 
@@ -1080,7 +1090,7 @@ def build_manual_payment_text(package, method):
         f"3️⃣ Choose Delivery Method: **Bank**\n"
         f"4️⃣ Recipient Name: **Govind Mahto**\n"
         f"5️⃣ Bank Account No: **002020391365887**\n"
-        f"   IFSC Code: **JIOP0000001**\n"
+        f"5️⃣ IFSC Code: **JIOP0000001**\n"
         f"6️⃣ Reason for Payment: **Family Support**\n\n"
         f"📸 After sending payment, upload a *payment screenshot* here.\n"
         f"⏳ Your payment session is active. Complete it before the timer ends."
